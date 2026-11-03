@@ -11,6 +11,8 @@
 #include "huanzhu_audio_codec.h"
 
 #include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <driver/spi_master.h>
 #include <driver/gpio.h>
 #include <esp_lcd_panel_io.h>
@@ -22,6 +24,7 @@
 // 厂商实测初始化序列（188 条，由 360示例代码/main.cpp 自动转换；
 // 0x11/0x29/0x2A/0x2B/0x3A/0x36 交由 esp_lcd 驱动与下面的 mirror 调用处理）
 static const st77916_lcd_init_cmd_t vendor_specific_init_huanzhu[] = {
+    {0x01, (uint8_t []){0x00}, 0, 150},  // SWRESET：对齐厂商实测时序，驱动不自动发
     {0xF0, (uint8_t []){0x28}, 1, 0},
     {0xF2, (uint8_t []){0x28}, 1, 0},
     {0x73, (uint8_t []){0xF0}, 1, 0},
@@ -209,7 +212,9 @@ static const st77916_lcd_init_cmd_t vendor_specific_init_huanzhu[] = {
     {0xD9, (uint8_t []){0x33}, 1, 0},
     {0xF3, (uint8_t []){0x01}, 1, 0},
     {0xF0, (uint8_t []){0x00}, 1, 0},
-    {0x21, (uint8_t []){0x00}, 0, 0},
+    {0x21, (uint8_t []){0x00}, 0, 0},   // INVERSION ON（厂商实测需要）
+    {0x11, (uint8_t []){0x00}, 0, 120},  // SLPOUT+120ms：驱动不自动发，缺它面板一直睡眠
+    {0x29, (uint8_t []){0x00}, 0, 0},    // DISPON（与官方 1.85B 表尾对齐）
 };
 
 class HuanzhuBoard : public WifiBoard {
@@ -243,6 +248,23 @@ private:
         ESP_ERROR_CHECK(gpio_set_level(AUDIO_SPK_SD_GPIO, 1));
     }
 
+    void InitializePanelLongReset() {
+        // 厂商点亮示例实测时序：RST 低 500ms -> 高 1000ms，等电源泵稳定
+        gpio_config_t io_conf = {};
+        io_conf.pin_bit_mask = 1ULL << (int)LCD_PIN_RST;
+        io_conf.mode = GPIO_MODE_OUTPUT;
+        io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+        io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        io_conf.intr_type = GPIO_INTR_DISABLE;
+        ESP_ERROR_CHECK(gpio_config(&io_conf));
+        ESP_ERROR_CHECK(gpio_set_level(LCD_PIN_RST, 0));
+        vTaskDelay(pdMS_TO_TICKS(500));
+        ESP_ERROR_CHECK(gpio_set_level(LCD_PIN_RST, 1));
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        gpio_reset_pin(LCD_PIN_RST);  // 交还给 esp_lcd 驱动接管
+        ESP_LOGI(TAG, "Panel long reset done (500ms/1000ms)");
+    }
+
     void InitializeSpi() {
         ESP_LOGI(TAG, "Initialize SPI bus: SCLK=%d MOSI=%d", LCD_PIN_SCLK, LCD_PIN_MOSI);
         spi_bus_config_t bus_config = {};
@@ -264,7 +286,7 @@ private:
         io_config.cs_gpio_num = LCD_PIN_CS;
         io_config.dc_gpio_num = LCD_PIN_DC;
         io_config.spi_mode = 0;
-        io_config.pclk_hz = 40 * 1000 * 1000;
+        io_config.pclk_hz = 20 * 1000 * 1000;
         io_config.trans_queue_depth = 10;
         io_config.lcd_cmd_bits = 8;
         io_config.lcd_param_bits = 8;
@@ -309,10 +331,11 @@ public:
     HuanzhuBoard() : boot_button_(BOOT_BUTTON_GPIO) {
         InitializePowerSaveTimer();
         InitializeSpeakerEnable();
+        InitializePanelLongReset();
         InitializeSpi();
         InitializeSt77916Display();
         InitializeButtons();
-        GetBacklight()->RestoreBrightness();
+        GetBacklight()->SetBrightness(100);  // 厂商为纯高电平背光，100% 占空比等效直流
     }
 
     virtual AudioCodec* GetAudioCodec() override {
