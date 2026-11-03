@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   build:
-    name: Build huanzhu-360
+    name: "Build huanzhu-360 (wake word ni hao mo si)"
     runs-on: ubuntu-latest
     container:
       image: espressif/idf:release-v6.1
@@ -16,14 +16,98 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 上游 scripts/build.py 的 _wake_word_sdkconfig_options() 只接受
+      # ^wn9[sl]_... 这类 WakeNet9 模型，并且无条件注入
+      # CONFIG_USE_CUSTOM_WAKE_WORD=n —— 板子 config.json 里写 =y 会被它覆盖。
+      # 这里在构建前就地打最小补丁，让 --wake-word custom 合法。
+      # 词文本与 MultiNet 模型仍由 main/boards/huanzhu/config.json 提供。
+      - name: Patch scripts/build.py to accept --wake-word custom
+        shell: bash
+        run: |
+          python3 - <<'PYEOF'
+          import io
+          import sys
+
+          PATHNAME = "scripts/build.py"
+          ANCHOR = '    if normalized == "disabled":'
+          ADDITION = (
+              '    if normalized == "custom":\n'
+              '        options.extend([\n'
+              '            "CONFIG_USE_CUSTOM_WAKE_WORD=y",\n'
+              '        ])\n'
+              '        return normalized, options, ["CONFIG_USE_CUSTOM_WAKE_WORD"]\n'
+              '\n'
+          )
+
+          src = io.open(PATHNAME, encoding="utf-8").read()
+          if 'if normalized == "custom":' in src:
+              print("build.py: already patched")
+              sys.exit(0)
+          if src.count(ANCHOR) != 1:
+              sys.exit("FATAL: anchor count=%d (expected 1); upstream layout changed"
+                       % src.count(ANCHOR))
+          if "def _wake_word_sdkconfig_options" not in src.split(ANCHOR)[0]:
+              sys.exit("FATAL: anchor is not inside _wake_word_sdkconfig_options()")
+          io.open(PATHNAME, "w", encoding="utf-8", newline="\n").write(
+              src.replace(ANCHOR, ADDITION + ANCHOR, 1))
+          print("build.py: patched, --wake-word custom now accepted")
+          PYEOF
+
       - name: Build
         shell: bash
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           source "$IDF_PATH/export.sh"
-          python scripts/build.py huanzhu --name huanzhu-360 --language zh-CN --wake-word nihaoxiaozhi
+          python scripts/build.py huanzhu --name huanzhu-360 --language zh-CN --wake-word custom
+
+      # 打包器（scripts/build_default_assets.py）在没有 MultiNet 符号时会明确报错，
+      # 但这里再对成品兜底一次：镜像里必须同时找到命令词文本和 mn*_cn 模型名，
+      # 否则唤醒词会静默失效，刷进板子也听不到。
+      - name: Verify custom wake word is inside merged binary
+        shell: bash
+        run: |
+          set -e
+          F=build/merged-binary.bin
+          ls -l "$F"
+          # 用 grep -a 而不是 strings：IDF 容器不保证带 binutils
+          echo "===== 镜像内找到的语音模型名 ====="
+          grep -a -o -E '(wn9[nsl]?_|mn[0-9]+_(cn|en)|vadn_|fst_)[a-z0-9_]{0,24}' "$F" | sort -u | head -30 || echo "(没有)"
+          if grep -a -q 'ni hao mo si' "$F"; then
+            echo "OK: 自定义唤醒词文本 'ni hao mo si' 已打进 merged 镜像"
+          else
+            echo "::error::merged 镜像里找不到 'ni hao mo si'，config.json 的 CONFIG_CUSTOM_WAKE_WORD 没生效"
+            exit 1
+          fi
+          if grep -a -q -E 'mn[0-9]+_cn' "$F"; then
+            echo "OK: MultiNet 中文模型已打包"
+          else
+            echo "::error::没有 MultiNet 中文模型 (mn*_cn)，检查 config.json 的 CONFIG_SR_MN_CN_* 符号名"
+            exit 1
+          fi
+
+      # 万一 MultiNet 符号名对不上（esp-sr 版本差异会改名），把可用符号
+      # 直接打印出来，省掉"改一个试一轮十五分钟"的往返。
+      - name: List available MultiNet model symbols (diagnostics)
+        if: failure()
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE" || true
+          K="managed_components/espressif__esp-sr/Kconfig.projbuild"
+          if [ -f "$K" ]; then
+            echo "===== 本版本 esp-sr 提供的中文 MultiNet 符号 ====="
+            grep -E '^[[:space:]]*config SR_MN_CN' "$K" || echo "(没找到 SR_MN_CN_*)"
+            echo "===== 英文 ====="
+            grep -E '^[[:space:]]*config SR_MN_EN' "$K" || true
+            echo "把上面存在的符号替换掉 config.json 里的 CONFIG_SR_MN_CN_MULTINET6_QUANT 即可"
+          else
+            echo "$K 不存在，无法列出符号（构建可能在解析依赖前就失败了）"
+            ls -d managed_components/* 2>/dev/null || true
+          fi
+          echo "===== sdkconfig 里实际生效的唤醒词相关项 ====="
+          grep -E '^(CONFIG_(USE_(AFE|ESP|CUSTOM)_WAKE_WORD|WAKE_WORD_DISABLED)|CONFIG_CUSTOM_WAKE_WORD|CONFIG_SR_(MN|WN))' sdkconfig 2>/dev/null || echo "(sdkconfig 不存在)"
 
       - name: Upload firmware
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: huanzhu-360_merged-binary
