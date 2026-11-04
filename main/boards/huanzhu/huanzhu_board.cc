@@ -219,7 +219,8 @@ static const st77916_lcd_init_cmd_t vendor_specific_init_huanzhu[] = {
 
 class HuanzhuBoard : public WifiBoard {
 private:
-    Button boot_button_;
+    Button boot_button_;   // 拨轮上拨 KNOB_UP_GPIO：等效 BOOT 键（启动中进配网 / 平时切换对话）
+    Button knob_press_button_;  // 拨轮中间按下 KNOB_PRESS_GPIO：对话开关
     Display* display_ = nullptr;
     PowerSaveTimer* power_save_timer_ = nullptr;
 
@@ -317,7 +318,17 @@ private:
     }
 
     void InitializeButtons() {
+        // 拨轮上拨 = BOOT 等效键：启动中按下进配网模式，平时切换对话状态
         boot_button_.OnClick([this]() {
+            auto& app = Application::GetInstance();
+            if (app.GetDeviceState() == kDeviceStateStarting) {
+                EnterWifiConfigMode();
+                return;
+            }
+            app.ToggleChatState();
+        });
+        // 拨轮中间按下 = 对话开关（原 BOOT 键职责，这块板没有可按的 BOOT 键）
+        knob_press_button_.OnClick([this]() {
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting) {
                 EnterWifiConfigMode();
@@ -328,7 +339,7 @@ private:
     }
 
 public:
-    HuanzhuBoard() : boot_button_(BOOT_BUTTON_GPIO) {
+    HuanzhuBoard() : boot_button_(KNOB_UP_GPIO), knob_press_button_(KNOB_PRESS_GPIO) {
         InitializePowerSaveTimer();
         InitializeSpeakerEnable();
         InitializePanelLongReset();
