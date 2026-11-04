@@ -9,6 +9,7 @@
 #include "config.h"
 #include "power_save_timer.h"
 #include "huanzhu_audio_codec.h"
+#include "huanzhu_display.h"
 
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
@@ -238,15 +239,11 @@ private:
     }
 
     void InitializeSpeakerEnable() {
-        // MAX98357A 的 SD_MODE 经 R31 上拉，这里再主动拉高一次确保开声
-        gpio_config_t io_conf = {};
-        io_conf.pin_bit_mask = 1ULL << (int)AUDIO_SPK_SD_GPIO;
-        io_conf.mode = GPIO_MODE_OUTPUT;
-        io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
-        io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-        io_conf.intr_type = GPIO_INTR_DISABLE;
-        ESP_ERROR_CHECK(gpio_config(&io_conf));
-        ESP_ERROR_CHECK(gpio_set_level(AUDIO_SPK_SD_GPIO, 1));
+        // 2026-11-04 修正：这里**不再** gpio_config(SD_MODE)。
+        // 旧版 board 与 huanzhu_audio_codec 构造函数对 GPIO16 各配置一次，
+        // 开机日志报 `W gpio: conflict found for GPIO[16]`。
+        // SD_MODE 现由 codec 独家认领（huanzhu_audio_codec.cc 里拉高），功能不变。
+        ESP_LOGI(TAG, "Speaker SD_MODE( GPIO%d ) owned by audio codec", (int)AUDIO_SPK_SD_GPIO);
     }
 
     void InitializePanelLongReset() {
@@ -313,21 +310,17 @@ private:
         esp_lcd_panel_swap_xy(panel, false);
         esp_lcd_panel_disp_on_off(panel, true);
 
-        display_ = new SpiLcdDisplay(panel_io, panel,
-                                     LCD_WIDTH, LCD_HEIGHT, 0, 0, true, true, false);
+        display_ = new HuanzhuRoundDisplay(panel_io, panel,
+                                           LCD_WIDTH, LCD_HEIGHT, 0, 0, true, true, false);
     }
 
     void InitializeButtons() {
-        // 拨轮上拨 = BOOT 等效键：启动中按下进配网模式，平时切换对话状态
-        boot_button_.OnClick([this]() {
-            auto& app = Application::GetInstance();
-            if (app.GetDeviceState() == kDeviceStateStarting) {
-                EnterWifiConfigMode();
-                return;
-            }
-            app.ToggleChatState();
-        });
-        // 拨轮中间按下 = 对话开关（原 BOOT 键职责，这块板没有可按的 BOOT 键）
+        // 本机没有 GPIO0 BOOT 键，拨轮两档实测可靠（2026-11-04 GPIO 采样确认）：
+        //   按中间 = GPIO4（KNOB_PRESS）→ 对话开关。卡 listening 时按它 = 关通道退回 idle，
+        //     这就是「答完话卡住」的物理逃生口（application.cc HandleToggleChatEvent
+        //     的 listening 分支：CloseAudioChannel → idle）。
+        //   上拨   = GPIO3（KNOB_UP）  → 短按打断当前播报；长按 2s = 进配网模式（原 BOOT 语义）
+        //   下拨   = GPIO5 实测恒低（硬件断/短路），不绑定
         knob_press_button_.OnClick([this]() {
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting) {
@@ -335,6 +328,29 @@ private:
                 return;
             }
             app.ToggleChatState();
+        });
+
+        // 上拨短按：打断当前播报（speaking/notifying 时最有用）。
+        // AbortSpeaking 不是线程安全的，和上游一样经 Schedule 回主任务执行。
+        boot_button_.OnClick([this]() {
+            auto& app = Application::GetInstance();
+            if (app.GetDeviceState() == kDeviceStateStarting) {
+                EnterWifiConfigMode();
+                return;
+            }
+            app.Schedule([]() {
+                auto& a = Application::GetInstance();
+                if (a.GetDeviceState() == kDeviceStateSpeaking ||
+                    a.GetDeviceState() == kDeviceStateNotifying) {
+                    a.AbortSpeaking(kAbortReasonNone);
+                }
+            });
+        });
+
+        // 上拨长按（上游 iot_button 默认时长）：进配网模式（BOOT 键原语义，重配 WiFi 不拆机）
+        boot_button_.OnLongPress([this]() {
+            ESP_LOGI(TAG, "Knob up long press: enter wifi config mode");
+            EnterWifiConfigMode();
         });
     }
 
