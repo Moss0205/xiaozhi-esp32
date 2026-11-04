@@ -1,4 +1,4 @@
-name: Build Huanzhu Board
+﻿name: Build Huanzhu Board
 
 on:
   workflow_dispatch:
@@ -56,7 +56,7 @@ jobs:
       # 幻珠圆屏补丁 1/2：字幕条几何。360x360 方形帧缓冲 + 内切圆可见区，
       # 上游把字幕条贴最底边（LV_ALIGN_BOTTOM_MID）且宽 360px——条的两端
       # 落在圆外被面板切黑，单行滚动字幕大部分时间看不见。
-      # 修复：把 bottom_bar_ 抬高 24px（-24 offset），标签宽收到 200px，
+      # 修复：把 bottom_bar_ 抬高 35px（-35 offset），标签宽收到 200px，
       # 使 y≈322 处内切圆半宽(~110px) >= 标签半宽(100px)。多行/单行两个分支都改，
       # SetChatMessage 的重对齐同步抬高，幂等（已打过就跳过）。
       - name: Patch lcd_display.cc for round-display subtitle geometry
@@ -84,7 +84,7 @@ jobs:
           N_MULTILINE = """    lv_obj_set_scrollbar_mode(bottom_bar_, LV_SCROLLBAR_MODE_OFF);
               // Huanzhu round display (360x360 inscribed circle): lift the bar above
               // the corner cut-off and narrow the label so text stays in the circle.
-              lv_obj_align(bottom_bar_, LV_ALIGN_BOTTOM_MID, 0, -24);
+              lv_obj_align(bottom_bar_, LV_ALIGN_BOTTOM_MID, 0, -35);
 
               /* chat_message_label_ placed in bottom_bar_, multiline wrapped display */
               chat_message_label_ = lv_label_create(bottom_bar_);
