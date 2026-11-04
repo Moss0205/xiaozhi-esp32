@@ -1,5 +1,4 @@
 {
-    "manufacturer": "huanzhu",
     "type": "huanzhu-360",
     "target": "esp32s3",
     "builds": [
