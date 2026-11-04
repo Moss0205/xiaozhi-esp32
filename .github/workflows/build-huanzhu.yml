@@ -53,6 +53,191 @@ jobs:
           print("build.py: patched, --wake-word custom now accepted")
           PYEOF
 
+      # 幻珠圆屏补丁 1/2：字幕条几何。360x360 方形帧缓冲 + 内切圆可见区，
+      # 上游把字幕条贴最底边（LV_ALIGN_BOTTOM_MID）且宽 360px——条的两端
+      # 落在圆外被面板切黑，单行滚动字幕大部分时间看不见。
+      # 修复：把 bottom_bar_ 抬高 24px（-24 offset），标签宽收到 200px，
+      # 使 y≈322 处内切圆半宽(~110px) >= 标签半宽(100px)。多行/单行两个分支都改，
+      # SetChatMessage 的重对齐同步抬高，幂等（已打过就跳过）。
+      - name: Patch lcd_display.cc for round-display subtitle geometry
+        shell: bash
+        run: |
+          python3 - <<'PYEOF'
+          import io
+          import sys
+
+          PATHNAME = "main/display/lcd_display.cc"
+          MARKER = "Huanzhu round display"
+
+          src = io.open(PATHNAME, encoding="utf-8").read()
+          if MARKER in src:
+              print("lcd_display.cc: already patched")
+              sys.exit(0)
+
+          A_MULTILINE = """    lv_obj_set_scrollbar_mode(bottom_bar_, LV_SCROLLBAR_MODE_OFF);
+              lv_obj_align(bottom_bar_, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+              /* chat_message_label_ placed in bottom_bar_, multiline wrapped display */
+              chat_message_label_ = lv_label_create(bottom_bar_);
+              lv_label_set_text(chat_message_label_, "");
+              lv_obj_set_width(chat_message_label_, LV_HOR_RES - lvgl_theme->spacing(8));"""
+          N_MULTILINE = """    lv_obj_set_scrollbar_mode(bottom_bar_, LV_SCROLLBAR_MODE_OFF);
+              // Huanzhu round display (360x360 inscribed circle): lift the bar above
+              // the corner cut-off and narrow the label so text stays in the circle.
+              lv_obj_align(bottom_bar_, LV_ALIGN_BOTTOM_MID, 0, -24);
+
+              /* chat_message_label_ placed in bottom_bar_, multiline wrapped display */
+              chat_message_label_ = lv_label_create(bottom_bar_);
+              lv_label_set_text(chat_message_label_, "");
+              lv_obj_set_width(chat_message_label_, LV_HOR_RES - 160);"""
+
+          A_SINGLE = """    lv_obj_set_scrollbar_mode(bottom_bar_, LV_SCROLLBAR_MODE_OFF);
+              lv_obj_align(bottom_bar_, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+              /* chat_message_label_ placed in bottom_bar_, single-line horizontal scroll */
+              chat_message_label_ = lv_label_create(bottom_bar_);
+              lv_label_set_text(chat_message_label_, "");
+              lv_obj_set_width(chat_message_label_, LV_HOR_RES - lvgl_theme->spacing(8));"""
+          N_SINGLE = """    lv_obj_set_scrollbar_mode(bottom_bar_, LV_SCROLLBAR_MODE_OFF);
+              // Huanzhu round display (360x360 inscribed circle): lift the bar above
+              // the corner cut-off and narrow the label so text stays in the circle.
+              lv_obj_align(bottom_bar_, LV_ALIGN_BOTTOM_MID, 0, -24);
+
+              /* chat_message_label_ placed in bottom_bar_, single-line horizontal scroll */
+              chat_message_label_ = lv_label_create(bottom_bar_);
+              lv_label_set_text(chat_message_label_, "");
+              lv_obj_set_width(chat_message_label_, LV_HOR_RES - 160);"""
+
+          A_REALIGN = """    if (bottom_bar_ != nullptr) {
+                  lv_obj_align(bottom_bar_, LV_ALIGN_BOTTOM_MID, 0, 0);
+              }
+          #endif"""
+          N_REALIGN = """    if (bottom_bar_ != nullptr) {
+                  lv_obj_align(bottom_bar_, LV_ALIGN_BOTTOM_MID, 0, -24);
+              }
+          #endif"""
+
+          n_multi, n_single, n_realign = (src.count(A_MULTILINE), src.count(A_SINGLE),
+                                          src.count(A_REALIGN))
+          if n_multi != 1 or n_single != 1 or n_realign != 1:
+              sys.exit("FATAL: lcd anchors multi=%d single=%d realign=%d (expect 1,1,1)"
+                       % (n_multi, n_single, n_realign))
+          src = src.replace(A_MULTILINE, N_MULTILINE, 1)
+          src = src.replace(A_SINGLE, N_SINGLE, 1)
+          src = src.replace(A_REALIGN, N_REALIGN, 1)
+          io.open(PATHNAME, "w", encoding="utf-8", newline="\n").write(src)
+          print("lcd_display.cc: round-display geometry patched (lift -24px, width 200px)")
+          PYEOF
+
+      # 幻珠圆屏补丁 2/2：listening 看门狗。上游在 listening 里收不到服务端
+      # STOP/音频（弱信号上行拥塞）时会永远卡在 listening——状态机不回 idle，
+      # 没有按键时用户没有任何办法脱困。补丁在主循环 CLOCK_TICK（每秒）里检查：
+      # 连续 N 秒仍处于 listening 就关音频通道回 idle（N 可配，默认 20s）。
+      - name: Patch application.cc with listening watchdog
+        shell: bash
+        run: |
+          python3 - <<'PYEOF'
+          import io
+          import sys
+
+          PATHNAME = "main/application.cc"
+          MARKER = "Listening watchdog"
+
+          src = io.open(PATHNAME, encoding="utf-8").read()
+          if MARKER in src:
+              print("application.cc: already patched")
+              sys.exit(0)
+
+          # 用正则锚点（对缩进鲁棒）：定位 CLOCK_TICK 块开头，把看门狗插进块体。
+          # 幂等靠 MARKER；锚点缺失/多义时 FATAL 停构建。
+          import re as _re
+
+          pat = _re.compile(
+              r"(if \(bits & MAIN_EVENT_CLOCK_TICK\) \{\n(?:[ \t]*\n)?)([ \t]+clock_ticks_\+\+;\n)"
+          )
+          matches = list(pat.finditer(src))
+          if len(matches) != 1:
+              sys.exit("FATAL: CLOCK_TICK anchor matches=%d (expected 1)" % len(matches))
+          watchdog = (
+              "\n#if CONFIG_WATCHDOG_LISTENING_TIMEOUT\n"
+              "            // Huanzhu: if listening gets no server response (uplink congestion,\n"
+              "            // weak RSSI), close the channel so the device returns to idle\n"
+              "            // instead of being stuck forever. clock_ticks_ resets on every\n"
+              "            // state change, so it doubles as a seconds-in-state counter.\n"
+              "            if (GetDeviceState() == kDeviceStateListening &&\n"
+              "                clock_ticks_ >= CONFIG_WATCHDOG_LISTENING_TIMEOUT_SECONDS) {\n"
+              "                ESP_LOGW(TAG, \"Listening watchdog: no server response in %ds, closing channel\",\n"
+              "                         CONFIG_WATCHDOG_LISTENING_TIMEOUT_SECONDS);\n"
+              "                if (protocol_) {\n"
+              "                    protocol_->CloseAudioChannel();\n"
+              "                }\n"
+              "            }\n"
+              "#endif\n"
+          )
+          mt = matches[0]
+          indent = mt.group(2)[: -len(mt.group(2).lstrip())]  # clock_ticks_ 行的缩进
+          body = watchdog.replace("\n            ", "\n" + indent)
+          src = src[: mt.end(2)] + body + src[mt.end(2):]
+          n_tick = src.count("Listening watchdog")
+          if n_tick != 1:
+              sys.exit("FATAL: watchdog marker count=%d after patch (expected 1)" % n_tick)
+          io.open(PATHNAME, "w", encoding="utf-8", newline="\n").write(src)
+          print("application.cc: listening watchdog patched")
+          PYEOF
+
+      # 看门狗的 Kconfig 符号（WATCHDOG_LISTENING_TIMEOUT / _SECONDS）。
+      # 幂等：符号已存在就跳过；锚点变了就报错停构建，避免静默漏配。
+      - name: Patch Kconfig.projbuild with watchdog options
+        shell: bash
+        run: |
+          python3 - <<'PYEOF'
+          import io
+          import sys
+
+          PATHNAME = "main/Kconfig.projbuild"
+          MARKER = "WATCHDOG_LISTENING_TIMEOUT"
+
+          src = io.open(PATHNAME, encoding="utf-8").read()
+          if MARKER in src:
+              print("Kconfig.projbuild: already patched")
+              sys.exit(0)
+
+          # 正则锚点：定位 WAKE_WORD_DETECTION_IN_LISTENING 块尾部（default n），
+          # 在其后插入两个新符号。对缩进鲁棒；已存在则幂等跳过。
+          import re as _re
+
+          pat = _re.compile(
+              r'(config WAKE_WORD_DETECTION_IN_LISTENING\n'
+              r'[ \t]+bool "Enable Wake Word Detection in Listening Mode"\n'
+              r'[ \t]+default n\n)'
+          )
+          matches = list(pat.finditer(src))
+          if len(matches) != 1:
+              sys.exit("FATAL: WAKE_WORD_DETECTION_IN_LISTENING anchor matches=%d (expected 1)"
+                       % len(matches))
+          mt = matches[0]
+          insertion = (
+              "\n"
+              "config WATCHDOG_LISTENING_TIMEOUT\n"
+              "    bool \"Auto-recover when stuck in listening (huanzhu watchdog)\"\n"
+              "    default y\n"
+              "    help\n"
+              "        Close the audio channel after N seconds stuck in listening with\n"
+              "        no server response, so the device returns to idle instead of\n"
+              "        hanging forever.\n"
+              "\n"
+              "config WATCHDOG_LISTENING_TIMEOUT_SECONDS\n"
+              "    int \"Seconds before the listening watchdog fires\"\n"
+              "    default 20\n"
+              "    range 5 120\n"
+          )
+          src = src[: mt.end(1)] + insertion + src[mt.end(1):]
+          if src.count("config WATCHDOG_LISTENING_TIMEOUT\n") != 1:
+              sys.exit("FATAL: watchdog config count wrong after insertion")
+          io.open(PATHNAME, "w", encoding="utf-8", newline="\n").write(src)
+          print("Kconfig.projbuild: watchdog options added")
+          PYEOF
+
       - name: Build
         shell: bash
         run: |
