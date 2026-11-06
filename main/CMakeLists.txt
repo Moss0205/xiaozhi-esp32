@@ -478,6 +478,8 @@ elseif(CONFIG_BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_1_85B)
     set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_64)
 elseif(CONFIG_BOARD_TYPE_HUANZHU_360)
     set(BOARD_DIR "huanzhu")
+elseif(CONFIG_BOARD_TYPE_HUANZHU_BRIDGE)
+    set(BOARD_DIR "huanzhu_bridge")
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_16_4)
     set(BUILTIN_ICON_FONT font_material_symbols_16_4)
     set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_64)
@@ -1200,6 +1202,13 @@ endif()
 if(CONFIG_BOARD_TYPE_HUANZHU_360)
     # 幻珠模拟麦走 ADC 连续采样，需要 esp_adc 组件
     list(APPEND MAIN_PRIV_REQUIRES_EXTRA esp_adc)
+endif()
+
+if(CONFIG_BOARD_TYPE_HUANZHU_BRIDGE)
+    # 桥接版：ADC 组件 + HTTP 客户端（bridge_client 用）
+    list(APPEND MAIN_PRIV_REQUIRES_EXTRA esp_adc esp_http_client)
+    # 桥接版用自己的入口 bridge_main.cc，上游 main.cc（Application::Run 事件循环）移除
+    list(REMOVE_ITEM SOURCES "main.cc")
 endif()
 
 idf_component_register(SRCS ${SOURCES}
