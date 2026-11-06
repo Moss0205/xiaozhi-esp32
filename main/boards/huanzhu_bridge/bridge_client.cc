@@ -41,17 +41,17 @@ static bool json_string(const char* json, const char* key, char* out, size_t cap
     p = strchr(p + strlen(pattern), ':');
     if (p == NULL) return false;
     p++;
-    while (*p == ' ' || *p == '\\t') p++;
+    while (*p == ' ' || *p == '\t') p++;
     if (*p != '"') return false;
     p++;
     size_t i = 0;
-    while (*p != '\\0' && *p != '"' && i + 1 < cap) {
+    while (*p != '\0' && *p != '"' && i + 1 < cap) {
         // 服务端用 json.dumps(ensure_ascii=False) 输出，中文是 UTF-8 原文；
         // 只有 \" 和 \\\\ 需要还原，其余字节原样抄。
-        if (*p == '\\\\' && (p[1] == '"' || p[1] == '\\\\')) p++;
+        if (*p == '\\' && (p[1] == '"' || p[1] == '\\')) p++;
         out[i++] = *p++;
     }
-    out[i] = '\\0';
+    out[i] = '\0';
     return true;
 }
 
@@ -88,7 +88,7 @@ bool bridge_post_voice(const int16_t* pcm, size_t sample_count,
         return false;
     }
     if (out_text != NULL && text_cap > 0) {
-        if (!json_string(resp.c_str(), "text", out_text, text_cap)) out_text[0] = '\\0';
+        if (!json_string(resp.c_str(), "text", out_text, text_cap)) out_text[0] = '\0';
     }
     if (out_id != NULL) {
         // 服务端没说话时返回 id:null，atoi 得 0；调用方用 out_text 为空判断更稳，
@@ -126,7 +126,7 @@ bool bridge_poll_reply(int after_id, int* out_id,
     if (!json_int(resp.c_str(), "id", &id)) return false;
     if (out_id != NULL) *out_id = id;
     if (out_text != NULL && text_cap > 0) {
-        if (!json_string(resp.c_str(), "reply", out_text, text_cap)) out_text[0] = '\\0';
+        if (!json_string(resp.c_str(), "reply", out_text, text_cap)) out_text[0] = '\0';
     }
     if (out_has_audio != NULL) {
         *out_has_audio = (strstr(resp.c_str(), "\"has_audio\": true") != NULL ||
