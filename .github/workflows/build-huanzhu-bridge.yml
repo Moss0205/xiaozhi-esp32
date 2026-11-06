@@ -1,0 +1,100 @@
+name: Build Huanzhu Bridge Board
+
+on:
+  workflow_dispatch:
+    inputs:
+      key_log_only:
+        description: '复测模式（1 = 按键只打印 GPIO 原始电平，不触发语义；见 KEY_RETEST.md）'
+        type: choice
+        required: true
+        default: '0'
+        options: ['0', '1']
+      bridge_host:
+        description: '桥接服务地址（默认 mac-mini，即 Tailscale MagicDNS 名；解析不到就填 tailnet IP）'
+        type: string
+        required: false
+        default: 'mac-mini'
+      variant:
+        description: '构建变体名（产物 artifact 名后缀，用于区分复测版/正式版）'
+        type: string
+        required: false
+        default: 'release'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: "Build huanzhu-bridge (Mac mini HTTP bridge)"
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:release-v6.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 桥接地址/令牌/复测开关经 override 头注入（bridge_config.h 用 __has_include 探测，
+      # 本地编译没有该文件时用默认值）。真实 token 只存在于 CI secret，不落仓库。
+      - name: Generate bridge_token_override.h
+        shell: bash
+        env:
+          BRIDGE_TOKEN: ${{ secrets.BRIDGE_TOKEN }}
+          INPUT_HOST: ${{ inputs.bridge_host }}
+          INPUT_LOG: ${{ inputs.key_log_only }}
+        run: |
+          set -e
+          DIR=main/boards/huanzhu_bridge
+          if [ -z "$BRIDGE_TOKEN" ]; then
+            echo "::error::仓库 Settings → Secrets and variables → Actions 里还没建 BRIDGE_TOKEN"
+            exit 1
+          fi
+          # 用 printf 而不是 heredoc：token 里若出现 $ 或反引号不会被展开
+          {
+            printf '// 由 CI 生成，勿提交\n'
+            printf '#define BRIDGE_TOKEN "%s"\n' "$BRIDGE_TOKEN"
+            printf '#undef BRIDGE_HOST\n#define BRIDGE_HOST "%s"\n' "$INPUT_HOST"
+            printf '#undef BRIDGE_KEY_LOG_ONLY\n#define BRIDGE_KEY_LOG_ONLY %s\n' "$INPUT_LOG"
+          } > "$DIR/bridge_token_override.h"
+          echo "override 已生成（token 长度 ${#BRIDGE_TOKEN}，host=$INPUT_HOST, key_log_only=$INPUT_LOG）"
+
+      - name: Build
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          source "$IDF_PATH/export.sh"
+          # board 参数 = 板目录名 huanzhu_bridge（不是 type）；
+          # --name 推导出的期望符号是 CONFIG_BOARD_TYPE_HUANZHU_BRIDGE，与 CMake 分支一致。
+          # --wake-word disabled：桥接版不用唤醒词（靠上拨开始对话），避免 build.py
+          # 注入 CONFIG_USE_CUSTOM_WAKE_WORD 那套小智专属选项。
+          python scripts/build.py huanzhu_bridge --name huanzhu-bridge --language zh-CN --wake-word disabled
+
+      # 兜底自检：镜像里必须能找到桥接地址与三个桥接源文件的符号，
+      # 否则说明变体没被选中 / bridge_app 没编进去，刷进板子也是小智版行为。
+      - name: Verify bridge build
+        shell: bash
+        env:
+          INPUT_HOST: ${{ inputs.bridge_host }}
+        run: |
+          set -e
+          F=build/merged-binary.bin
+          ls -l "$F"
+          for s in bridge_app bridge_client bridge_hal "huanzhu bridge boot ok"; do
+            if grep -a -q "$s" "$F"; then echo "OK: 含 $s"; else echo "::error::镜像里找不到 $s"; exit 1; fi
+          done
+          if grep -a -q "$INPUT_HOST" "$F"; then
+            echo "OK: 桥接地址 $INPUT_HOST 已编入"
+          else
+            echo "::error::镜像里找不到桥接地址 $INPUT_HOST（override 头没生效？）"; exit 1
+          fi
+          # 小智唤醒词链路应当不在（wake-word disabled）
+          if grep -a -q "ni hao mo si" "$F"; then
+            echo "::warning::镜像里仍有 ni hao mo si 字符串，确认没混用小智 config.json"
+          fi
+
+      - name: Upload firmware
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: huanzhu-bridge-${{ inputs.variant }}_merged-binary
+          path: build/merged-binary.bin
+          if-no-files-found: error
