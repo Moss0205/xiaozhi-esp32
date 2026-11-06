@@ -1,5 +1,4 @@
 {
-    "manufacturer": "huanzhu",
     "type": "huanzhu-bridge",
     "target": "esp32s3",
     "builds": [
