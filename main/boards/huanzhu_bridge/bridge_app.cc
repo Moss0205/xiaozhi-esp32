@@ -46,6 +46,10 @@ static const char* emotion_for_state(bridge_state_t s) {
 static TickType_t g_last_activity_tick = 0;
 static bool g_screen_off = false;
 
+// 字幕停留（2026-11-09）：回复播完后字幕保留几分钟再消失；新对话开始直接替换。
+static bool g_reply_shown = false;
+static TickType_t g_reply_shown_tick = 0;
+
 // 记一次活动：刷新空闲计时；若屏幕已关则重新点亮。
 static void touch_activity(void) {
     g_last_activity_tick = xTaskGetTickCount();
@@ -59,6 +63,7 @@ static void touch_activity(void) {
 // 统一改状态：换表情 + 记一次活动。
 static void bridge_set_state(bridge_state_t s) {
     g_state = s;
+    if (s == ST_RECORDING) g_reply_shown = false;  // 新对话：旧回复字幕不再停留
     bridge_hal_set_emotion(emotion_for_state(s));
     touch_activity();
 }
@@ -293,6 +298,8 @@ static void main_task(void* arg) {
                     ESP_LOGI(TAG, "reply id=%d has_audio=%d text=%s",
                              rid, (int)has_audio, reply);
                     bridge_hal_show_text(reply);
+                    g_reply_shown = true;
+                    g_reply_shown_tick = xTaskGetTickCount();
                     if (has_audio) {
                         int samples = bridge_download_audio(rid, play, play_max);
                         if (samples > 0) {
@@ -315,8 +322,9 @@ static void main_task(void* arg) {
                 // 播完（或被上拨打断）：若打断时 g_state 已被按键改成 RECORDING，
                 // 这里不要覆盖回 IDLE。
                 if (!g_stop_playback) {
+                    // 播完不立刻清字幕：回复保留 BRIDGE_SUBTITLE_HOLD_MINUTES 分钟，
+                    // 到时由 IDLE 分支清回"你好MOSS"；新对话会直接替换。
                     bridge_set_state(ST_IDLE);
-                    bridge_hal_show_text("你好MOSS");
                 }
                 g_stop_playback = false;
             }
@@ -324,6 +332,17 @@ static void main_task(void* arg) {
             // 已按 g_state 现值处理，不再强制覆盖。
         } else {
             // IDLE / UPLOADING（上传在 RECORDING 分支里同步做完，不会停留）
+            // 字幕停留：回复播完后保留几分钟再消失（回"你好MOSS"）；新对话会替换它。
+            if (BRIDGE_SUBTITLE_HOLD_MINUTES > 0 && g_state == ST_IDLE && g_reply_shown) {
+                TickType_t shown_ms =
+                    (xTaskGetTickCount() - g_reply_shown_tick) * portTICK_PERIOD_MS;
+                if (shown_ms >= (TickType_t)BRIDGE_SUBTITLE_HOLD_MINUTES * 60 * 1000) {
+                    g_reply_shown = false;
+                    bridge_hal_show_text("你好MOSS");
+                    ESP_LOGI(TAG, "subtitle hold %d min expired, back to greeting",
+                             BRIDGE_SUBTITLE_HOLD_MINUTES);
+                }
+            }
             // 自动睡眠：IDLE 下无操作超过 BRIDGE_IDLE_SLEEP_MINUTES 分钟就关背光，
             // 任意按键（key_task 按下时 touch_activity）会重新点亮。
             if (BRIDGE_IDLE_SLEEP_MINUTES > 0 && g_state == ST_IDLE && !g_screen_off) {
