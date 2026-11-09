@@ -5,7 +5,9 @@
     "builds": [
         {
             "name": "huanzhu-bridge",
-            "sdkconfig_append": []
+            "sdkconfig_append": [
+                "CONFIG_USE_MULTILINE_CHAT_MESSAGE=y"
+            ]
         }
     ]
 }
