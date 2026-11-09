@@ -29,6 +29,39 @@ static volatile bool g_stop_playback = false;
 static volatile int g_volume = BRIDGE_VOLUME_DEFAULT;
 static int g_last_reply_id = 0;
 
+// ---------------- 表情 + 自动睡眠（2026-11-09） ----------------
+// 表情映射（名字见 assets 分区 index.json；新包 15 个）：
+static const char* emotion_for_state(bridge_state_t s) {
+    switch (s) {
+        case ST_RECORDING: return "happy";     // 在听
+        case ST_UPLOADING: return "thinking";  // 上传中（短暂）
+        case ST_WAITING:   return "thinking";  // 等 MOSS 回
+        case ST_PLAYING:   return "happy";     // 在说
+        case ST_IDLE:
+        default:           return "neutral";
+    }
+}
+
+static TickType_t g_last_activity_tick = 0;
+static bool g_screen_off = false;
+
+// 记一次活动：刷新空闲计时；若屏幕已关则重新点亮。
+static void touch_activity(void) {
+    g_last_activity_tick = xTaskGetTickCount();
+    if (g_screen_off) {
+        g_screen_off = false;
+        bridge_hal_set_backlight(true);
+        ESP_LOGI(TAG, "wake: backlight on");
+    }
+}
+
+// 统一改状态：换表情 + 记一次活动。
+static void bridge_set_state(bridge_state_t s) {
+    g_state = s;
+    bridge_hal_set_emotion(emotion_for_state(s));
+    touch_activity();
+}
+
 // ---------------- 按键：GPIO 轮询 + 消抖 + 短/长按 ----------------
 typedef struct {
     gpio_num_t gpio;
@@ -95,6 +128,7 @@ static void key_task(void* arg) {
                         // 按下
                         k->press_tick = xTaskGetTickCount();
                         k->long_fired = false;
+                        touch_activity();  // 睡眠中按下的第一下先唤醒屏幕，再走正常语义
                         log_raw_levels(k->name);
 #if BRIDGE_KEY_LOG_ONLY
                         ESP_LOGI(TAG, "KEY_LOG_ONLY: %s pressed, no action", k->name);
@@ -136,16 +170,16 @@ static void on_key_short(int idx) {
     if (idx == 0) {  // 上拨短按：开始对话（播放中 = 打断并重录）
         if (g_state == ST_PLAYING) g_stop_playback = true;
         if (g_state == ST_IDLE || g_state == ST_PLAYING) {
-            g_state = ST_RECORDING;
+            bridge_set_state(ST_RECORDING);
             bridge_hal_show_text("在听…");
             ESP_LOGI(TAG, "key UP short: start recording");
         }
     } else if (idx == 2) {  // 下拨短按：结束对话
         if (g_state == ST_RECORDING) {
-            g_state = ST_UPLOADING;  // 主任务检测到后上传并进 WAITING
+            bridge_set_state(ST_UPLOADING);  // 主任务检测到后上传并进 WAITING
             ESP_LOGI(TAG, "key DOWN short: stop recording, upload");
         } else if (g_state == ST_WAITING) {
-            g_state = ST_IDLE;
+            bridge_set_state(ST_IDLE);
             bridge_hal_show_text("你好MOSS");
             ESP_LOGI(TAG, "key DOWN short: cancel waiting");
         }
@@ -201,6 +235,8 @@ static void main_task(void* arg) {
         return;
     }
     bridge_hal_show_text("你好MOSS");
+    bridge_hal_set_emotion("neutral");
+    g_last_activity_tick = xTaskGetTickCount();
     ESP_LOGI(TAG, "bridge app ready, state=IDLE");
 
     for (;;) {
@@ -222,7 +258,7 @@ static void main_task(void* arg) {
             }
             if (g_state == ST_RECORDING) {
                 // 30 秒上限到，同样走上传
-                g_state = ST_UPLOADING;
+                bridge_set_state(ST_UPLOADING);
             }
             // UPLOADING：上传录音，拿听写文本（服务端已入队，MOSS 轮询后会回）
             bridge_hal_show_text("在想…");
@@ -232,15 +268,15 @@ static void main_task(void* arg) {
             if (got > 0 && bridge_post_voice(rec, got, &voice_id, heard, sizeof(heard))) {
                 if (voice_id < 0 || heard[0] == '\0') {
                     bridge_hal_show_text("没听清，再说一次");
-                    g_state = ST_IDLE;
+                    bridge_set_state(ST_IDLE);
                 } else {
                     ESP_LOGI(TAG, "heard id=%d text=%s", voice_id, heard);
                     g_last_reply_id = voice_id;
-                    g_state = ST_WAITING;
+                    bridge_set_state(ST_WAITING);
                 }
             } else {
                 bridge_hal_show_text("没连上桥接服务");
-                g_state = ST_IDLE;
+                bridge_set_state(ST_IDLE);
             }
         } else if (g_state == ST_WAITING) {
             // 等 MOSS 回复：每秒轮询一次，最长 120 秒；超时回 IDLE，不卡死。
@@ -259,7 +295,7 @@ static void main_task(void* arg) {
                     if (has_audio) {
                         int samples = bridge_download_audio(rid, play, play_max);
                         if (samples > 0) {
-                            g_state = ST_PLAYING;
+                            bridge_set_state(ST_PLAYING);
                             g_stop_playback = false;
                             play_pcm_with_gain(play, samples);
                         }
@@ -273,12 +309,12 @@ static void main_task(void* arg) {
             }
             if (g_state == ST_WAITING) {
                 if (!got_reply) bridge_hal_show_text("MOSS 没回，看看桥接服务");
-                g_state = ST_IDLE;
+                bridge_set_state(ST_IDLE);
             } else if (g_state == ST_PLAYING) {
                 // 播完（或被上拨打断）：若打断时 g_state 已被按键改成 RECORDING，
                 // 这里不要覆盖回 IDLE。
                 if (!g_stop_playback) {
-                    g_state = ST_IDLE;
+                    bridge_set_state(ST_IDLE);
                     bridge_hal_show_text("你好MOSS");
                 }
                 g_stop_playback = false;
@@ -287,6 +323,17 @@ static void main_task(void* arg) {
             // 已按 g_state 现值处理，不再强制覆盖。
         } else {
             // IDLE / UPLOADING（上传在 RECORDING 分支里同步做完，不会停留）
+            // 自动睡眠：IDLE 下无操作超过 BRIDGE_IDLE_SLEEP_MINUTES 分钟就关背光，
+            // 任意按键（key_task 按下时 touch_activity）会重新点亮。
+            if (BRIDGE_IDLE_SLEEP_MINUTES > 0 && g_state == ST_IDLE && !g_screen_off) {
+                TickType_t idle_ms =
+                    (xTaskGetTickCount() - g_last_activity_tick) * portTICK_PERIOD_MS;
+                if (idle_ms >= (TickType_t)BRIDGE_IDLE_SLEEP_MINUTES * 60 * 1000) {
+                    g_screen_off = true;
+                    bridge_hal_set_backlight(false);
+                    ESP_LOGI(TAG, "idle %d min: backlight off", BRIDGE_IDLE_SLEEP_MINUTES);
+                }
+            }
             vTaskDelay(pdMS_TO_TICKS(50));
         }
     }
