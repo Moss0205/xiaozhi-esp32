@@ -13,11 +13,11 @@
 // 2026-11-05 追加：顶部状态栏（top_bar_/status_bar_）同样贴矩形帧缓冲顶边被圆切，
 // 整体下移 kTopBarOffsetY（见 .cc）。
 //
-// ⚠️ 为什么**不开** CONFIG_USE_MULTILINE_CHAT_MESSAGE：
-//   上游 SetChatMessage() 在 MULTILINE 分支里每次消息都会
-//   `lv_obj_align(bottom_bar_, LV_ALIGN_BOTTOM_MID, 0, 0)`（lcd_display.cc:1143-1149）
-//   把条重新钉回底边，正好抵消本文件的几何校正。
-//   所以保持默认单行模式（该 re-align 在 #if 内不会执行），只在 SetupUI 后校正一次。
+// 多行字幕（2026-11-09 改）：CONFIG_USE_MULTILINE_CHAT_MESSAGE 已开，
+// 字幕换行一次全显示。注意上游 SetChatMessage() 在 MULTILINE 分支里每次
+// 消息都会把条重新钉回底边（lcd_display.cc:1143-1149），正好抵消本文件
+// 的几何校正，所以本类 override 了 SetChatMessage()：调完上游先收回圆内，
+// 再按实测高度把底边收到 y=312，避免多行时底角出圆被切。
 #ifndef _HUANZHU_DISPLAY_H_
 #define _HUANZHU_DISPLAY_H_
 
@@ -32,6 +32,7 @@ public:
                         mirror_x, mirror_y, swap_xy) {}
 
     void SetupUI() override;
+    void SetChatMessage(const char* role, const char* content) override;
 
 private:
     void FitSubtitleToCircle();
