@@ -1,11 +1,12 @@
-// 桥接硬件适配层 —— 把「板子能做的事」收成 6 个函数，应用层（bridge_app）
-// 只调这 6 个，不直接碰 codec / display / WiFi 的上游 API。
-// 这样 dsh 集成时只需在 huanzhu_hal.cc 里把这 6 个函数接到 fork 已有的类上，
+// 桥接硬件适配层 —— 把「板子能做的事」收成 8 个函数，应用层（bridge_app）
+// 只调这 8 个，不直接碰 codec / display / WiFi 的上游 API。
+// 这样 dsh 集成时只需在 huanzhu_hal.cc 里把这 8 个函数接到 fork 已有的类上，
 // 应用层代码一行不用改；上游 API 若有出入，也只改 hal 文件。
 #ifndef _BRIDGE_HAL_H_
 #define _BRIDGE_HAL_H_
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,6 +14,13 @@ extern "C" {
 
 // 在圆屏上显示一行文字（走 fork 的圆屏字幕修正，字会落在内切圆里）。
 void bridge_hal_show_text(const char* text);
+
+// 按名字切表情（assets 分区 index.json 里的名字，如 "neutral"）。
+// 表情图由上游 LcdDisplay::SetEmotion 渲染；分区里没有对应表情时回退字体表情。
+void bridge_hal_set_emotion(const char* emotion);
+
+// 背光开关（PwmBacklight，GPIO8）：true=亮（100），false=灭。自动睡眠用。
+void bridge_hal_set_backlight(bool on);
 
 // 从麦克风读 samples 个 16k 样本进 buf，返回实际读到的样本数。
 // fork 的 HuanzhuAudioCodec::Read(int16_t*, int) 就是这个语义。
