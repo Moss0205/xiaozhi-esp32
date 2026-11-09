@@ -30,15 +30,16 @@ static volatile int g_volume = BRIDGE_VOLUME_DEFAULT;
 static int g_last_reply_id = 0;
 
 // ---------------- 表情 + 自动睡眠（2026-11-09） ----------------
-// 表情映射（名字见 assets 分区 index.json；新包 15 个）：
+// 表情映射（名字见 assets 分区 index.json；精简包 5 个大脸：
+   // delicious、silly、funny、sleepy、confused）：
 static const char* emotion_for_state(bridge_state_t s) {
     switch (s) {
-        case ST_RECORDING: return "happy";     // 在听
-        case ST_UPLOADING: return "thinking";  // 上传中（短暂）
-        case ST_WAITING:   return "thinking";  // 等 MOSS 回
-        case ST_PLAYING:   return "happy";     // 在说
+        case ST_RECORDING: return "funny";     // 在听
+        case ST_UPLOADING: return "confused";  // 上传中（短暂）
+        case ST_WAITING:   return "confused";  // 等 MOSS 回
+        case ST_PLAYING:   return "silly";     // 在说
         case ST_IDLE:
-        default:           return "neutral";
+        default:           return "sleepy";    // 待机
     }
 }
 
@@ -235,7 +236,7 @@ static void main_task(void* arg) {
         return;
     }
     bridge_hal_show_text("你好MOSS");
-    bridge_hal_set_emotion("neutral");
+    bridge_hal_set_emotion("sleepy");
     g_last_activity_tick = xTaskGetTickCount();
     ESP_LOGI(TAG, "bridge app ready, state=IDLE");
 
