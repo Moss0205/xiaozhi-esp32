@@ -12,6 +12,7 @@
 #include "display/lcd_display.h"
 #include "audio_codec.h"
 #include "huanzhu_audio_codec.h"
+#include "board.h"
 
 #define TAG "bridge_hal"
 
@@ -51,6 +52,26 @@ void bridge_hal_show_text(const char* text) {
     //   g_display->SetChatMessage("assistant", text);
     // 字幕落在内切圆里是 HuanzhuRoundDisplay::SetupUI 的几何修正，与这行无关。
     g_display->SetChatMessage("assistant", text);
+}
+
+void bridge_hal_set_emotion(const char* emotion) {
+    if (g_display == nullptr) {
+        ESP_LOGW(TAG, "set_emotion: display not bound, emotion=%s", emotion);
+        return;
+    }
+    if (!g_display->SetEmotion(emotion)) {
+        ESP_LOGW(TAG, "set_emotion('%s') failed (no emoji in assets?)", emotion);
+    }
+}
+
+void bridge_hal_set_backlight(bool on) {
+    auto* backlight = Board::GetInstance().GetBacklight();
+    if (backlight == nullptr) {
+        ESP_LOGW(TAG, "set_backlight: no backlight");
+        return;
+    }
+    backlight->SetBrightness(on ? 100 : 0);
+    ESP_LOGI(TAG, "backlight %s", on ? "on" : "off");
 }
 
 int bridge_hal_mic_read(int16_t* buf, int samples) {
