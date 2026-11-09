@@ -67,11 +67,13 @@
 #define BRIDGE_KEY_LOG_ONLY 0   // 复测版：构建时 -DBRIDGE_KEY_LOG_ONLY=1 覆盖（见 KEY_RETEST.md）
 #endif
 
-// ---------------- 桥接服务（家里 Mac mini 上的 bridge_v2.py） ----------------
-// HOST：优先用 Tailscale MagicDNS 设备名 mac-mini；若板端 DNS 解析不到，
-// 改成 Mac mini 在 tailnet 里的 IP（在 Mac 上跑 tailscale status 看，勿公开）。
+// ---------------- 桥接服务（单位 Mac mini 上的 bridge_v2.py） ----------------
+// HOST：Mac mini 在单位局域网里的 IP（2026-11-07 测得 192.168.1.198）。
+// 板子在单位和 Mac 同一个局域网，用这个 IP 直连。Tailscale 设备名 mac-mini
+// 板端 DNS 解析不到，不要再改回去。注意这是 DHCP 地址，变了要同步改这里，
+// 长期办法是给 Mac 做 DHCP 保留。
 #ifndef BRIDGE_HOST
-#define BRIDGE_HOST "mac-mini"
+#define BRIDGE_HOST "192.168.1.198"
 #endif
 #ifndef BRIDGE_PORT
 #define BRIDGE_PORT 8765
