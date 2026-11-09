@@ -24,6 +24,9 @@ static constexpr int kTopBarWidth = 300;      // 图标条宽度（原 360 两�
 static constexpr int kBarWidth = 240;
 static constexpr int kBarOffsetY = 120;
 static constexpr int kBarPad = 4;
+// 多行字幕底边安全线：条宽 240px 时，底边 y=312 处圆内半宽 ≈122 → 可见 ~244px，
+// 整条（含底角）都在圆内。行数越多条越往上收，底边始终钉在 312。
+static constexpr int kSubtitleBottomY = 312;
 
 void HuanzhuRoundDisplay::SetupUI() {
     SpiLcdDisplay::SetupUI();
@@ -60,9 +63,9 @@ void HuanzhuRoundDisplay::FitSubtitleToCircle() {
         return;
     }
 
-    // 单行模式（未开 CONFIG_USE_MULTILINE_CHAT_MESSAGE）：
-    // 上游只在 MULTILINE 分支里每次 SetChatMessage 重新 align 回底边，
-    // 保持单行 → 这里的一次性校正不会被抵消。
+    // 多行模式（已开 CONFIG_USE_MULTILINE_CHAT_MESSAGE）：
+    // 上游每次 SetChatMessage 都会把条重新钉回底边，所以这里只做初始校正；
+    // 每条消息的重新收圆在 SetChatMessage() override 里做（见本文件下方）。
     lv_obj_set_size(bottom_bar_, kBarWidth, LV_SIZE_CONTENT);
     lv_obj_set_style_pad_all(bottom_bar_, 0, 0);
     lv_obj_set_style_pad_left(bottom_bar_, kBarPad, 0);
@@ -78,4 +81,21 @@ void HuanzhuRoundDisplay::FitSubtitleToCircle() {
 
     ESP_LOGI(TAG, "Subtitle fitted into circle: w=%d @ y+%d (was full-width at screen bottom)",
              kBarWidth, kBarOffsetY);
+}
+
+void HuanzhuRoundDisplay::SetChatMessage(const char* role, const char* content) {
+    // 上游 MULTILINE 分支每次都会把 bottom_bar_ 重新钉回方形帧缓冲底边，
+    // 正好抵消圆屏校正，所以先调上游设文字，再重新收进圆内。
+    SpiLcdDisplay::SetChatMessage(role, content);
+    FitSubtitleToCircle();  // 宽 240 + 居中（内部拿锁）
+    // 多行时条变高：按实测高度把底边收到 kSubtitleBottomY，避免底角出圆被切。
+    // 中心 y = 180 + offset；一行时 offset=120（与 FitSubtitleToCircle 一致）。
+    DisplayLockGuard lock(this);
+    if (bottom_bar_ != nullptr) {
+        lv_obj_update_layout(bottom_bar_);
+        int h = lv_obj_get_height(bottom_bar_);
+        int offset_y = (kSubtitleBottomY - 180) - h / 2;
+        if (offset_y < 0) offset_y = 0;
+        lv_obj_align(bottom_bar_, LV_ALIGN_CENTER, 0, offset_y);
+    }
 }
