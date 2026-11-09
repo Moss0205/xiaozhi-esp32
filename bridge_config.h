@@ -91,4 +91,13 @@
 #define BRIDGE_VOLUME_DEFAULT  80    // 播放音量初值 0-100（软件增益，不动 codec）
 #define BRIDGE_VOLUME_STEP     10
 
+// ---------------- 表情 + 自动睡眠（2026-11-09） ----------------
+// 表情：bridge_app 在状态变化时调 bridge_hal_set_emotion()，名字必须与
+// assets 分区 index.json 的 emoji_collection 一致（新包 15 个：neutral、
+// happy、laughing、sad、angry、crying、loving、surprised、shocked、
+// thinking、cool、relaxed、delicious、kissy、silly）。
+// 自动睡眠：IDLE 下无按键超过下面分钟数就关背光（GPIO8），任意按键唤醒；
+// 只关屏不断 WiFi（真深睡会断桥），0 = 不启用。
+#define BRIDGE_IDLE_SLEEP_MINUTES 5
+
 #endif  // _BRIDGE_CONFIG_H_
