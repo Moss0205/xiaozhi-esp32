@@ -274,6 +274,12 @@ choice BOARD_TYPE
     config BOARD_TYPE_HU_087
         bool "HU-087"
         depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_HUANZHU_360
+        bool "HuanZhu 360x360 round LCD (幻珠定制板)"
+        depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_HUANZHU_BRIDGE
+        bool "HuanZhu 360x360 round LCD - Mac mini bridge (幻珠桥接版)"
+        depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_JIUCHUAN
         bool "Jiuchuan ESP32-S3 (九川智能)"
         depends on IDF_TARGET_ESP32S3
@@ -615,12 +621,6 @@ choice BOARD_TYPE
         depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_1_85C
         bool "Waveshare ESP32-S3-Touch-LCD-1.85C"
-        depends on IDF_TARGET_ESP32S3
-    config BOARD_TYPE_HUANZHU_360
-        bool "HuanZhu 360x360 round LCD (幻珠定制板)"
-        depends on IDF_TARGET_ESP32S3
-    config BOARD_TYPE_HUANZHU_BRIDGE
-        bool "HuanZhu 360x360 round LCD - Mac mini bridge (幻珠桥接版)"
         depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_3_49
         bool "Waveshare ESP32-S3-Touch-LCD-3.49"
