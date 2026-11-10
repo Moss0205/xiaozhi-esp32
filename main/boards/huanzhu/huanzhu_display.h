@@ -10,6 +10,9 @@
 //
 // 修法：不动上游，派生一层，SetupUI 之后把字幕条整体收进内切圆。
 //
+// 2026-11-05 追加：顶部状态栏（top_bar_/status_bar_）同样贴矩形帧缓冲顶边被圆切，
+// 整体下移 kTopBarOffsetY（见 .cc）。
+//
 // ⚠️ 为什么**不开** CONFIG_USE_MULTILINE_CHAT_MESSAGE：
 //   上游 SetChatMessage() 在 MULTILINE 分支里每次消息都会
 //   `lv_obj_align(bottom_bar_, LV_ALIGN_BOTTOM_MID, 0, 0)`（lcd_display.cc:1143-1149）
@@ -32,6 +35,7 @@ public:
 
 private:
     void FitSubtitleToCircle();
+    void FitTopBarToCircle();
 };
 
 #endif  // _HUANZHU_DISPLAY_H_

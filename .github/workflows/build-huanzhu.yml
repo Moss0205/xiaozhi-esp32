@@ -2,9 +2,16 @@
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'main/boards/huanzhu/huanzhu_display.cc'
+      - 'main/boards/huanzhu/huanzhu_display.h'
+      - '.github/workflows/build-huanzhu.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -298,3 +305,30 @@ jobs:
           name: huanzhu-360_merged-binary
           path: build/merged-binary.bin
           if-no-files-found: error
+
+      # 同步发一份到 Release：Actions artifact 必须登录才能下载，
+      # Release asset 可匿名取回，便于自动校验和烧录。
+      - name: Publish firmware to a pre-release
+        if: success()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: huanzhu360-${{ github.run_id }}
+        run: |
+          set -e
+          API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          PAYLOAD=$(python3 -c 'import json,os; print(json.dumps({"tag_name":os.environ["TAG"],"name":"huanzhu-360 CI build "+os.environ["TAG"],"body":"Automatic build: subtitle and top bar fitted into the 360x360 inscribed circle.","prerelease":True}))')
+          RESP=$(curl -fsS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            -d "${PAYLOAD}" "${API}/releases")
+          UP=$(echo "${RESP}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upload_url"].split("{")[0])')
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary @build/merged-binary.bin \
+            "${UP}?name=merged-binary.bin" > /dev/null
+          echo "FIRMWARE_URL=https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/merged-binary.bin"
