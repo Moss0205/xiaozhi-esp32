@@ -349,6 +349,27 @@ def _wake_word_sdkconfig_options(
         "CONFIG_USE_CUSTOM_WAKE_WORD=n",
     ]
 
+    if normalized == "custom":
+        # HuanZhu "你好MOSS" custom wake word. The word text, display name,
+        # threshold, MultiNet model and listen-in-listening flag used to live
+        # in main/boards/huanzhu/config.json, which the build-tooling tests
+        # forbid (wake word is a build option, not a board preset). They now
+        # live here, next to the other --wake-word choices, so
+        # `build.py huanzhu --wake-word custom` stays self-contained.
+        options.extend([
+            "CONFIG_USE_CUSTOM_WAKE_WORD=y",
+            'CONFIG_CUSTOM_WAKE_WORD="ni hao mo si"',
+            'CONFIG_CUSTOM_WAKE_WORD_DISPLAY="你好MOSS"',
+            "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=15",
+            "CONFIG_SR_MN_CN_MULTINET6_QUANT=y",
+            "CONFIG_WAKE_WORD_DETECTION_IN_LISTENING=y",
+        ])
+        return normalized, options, [
+            "CONFIG_USE_CUSTOM_WAKE_WORD",
+            "CONFIG_SR_MN_CN_MULTINET6_QUANT",
+            "CONFIG_WAKE_WORD_DETECTION_IN_LISTENING",
+        ]
+
     if normalized == "disabled":
         options.append("CONFIG_WAKE_WORD_DISABLED=y")
         return normalized, options, ["CONFIG_WAKE_WORD_DISABLED"]
