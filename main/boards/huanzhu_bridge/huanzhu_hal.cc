@@ -54,6 +54,19 @@ void bridge_hal_show_text(const char* text) {
     g_display->SetChatMessage("assistant", text);
 }
 
+void bridge_hal_set_status(const char* status) {
+    if (g_display == nullptr) {
+        ESP_LOGW(TAG, "set_status: display not bound, status=%s", status);
+        return;
+    }
+    // 上游 LvglDisplay::SetStatus（display.h 公开虚方法）：把 status_label_ 的文字
+    // 换成 status，并取消隐藏。桥接版的状态机钉在 kDeviceStateStarting，Application
+    // 永远不会调 SetStatus，所以状态栏停在 SetupUI 的“正在初始化...”；这里由
+    // bridge_app 的时钟/状态逻辑显式调它来更新。内部自带 DisplayLockGuard，
+    // 从 bridge_app 任务调是线程安全的。
+    g_display->SetStatus(status);
+}
+
 void bridge_hal_set_emotion(const char* emotion) {
     if (g_display == nullptr) {
         ESP_LOGW(TAG, "set_emotion: display not bound, emotion=%s", emotion);

@@ -13,6 +13,7 @@
 #include <driver/gpio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
 
 #define TAG "bridge_app"
 
@@ -60,11 +61,71 @@ static void touch_activity(void) {
     }
 }
 
-// 统一改状态：换表情 + 记一次活动。
+// ---------------- 时钟（2026-11-17）：空闲时状态栏显示时间+日期 ----------------
+// 取代一直卡住的“正在初始化...”。时间由 SNTP 对时（bridge_main.cc，ntp.aliyun.com），
+// 时区 CST-8（Asia/Shanghai，UTC+8）。只在 ST_IDLE 且时间已对上时显示时钟；
+// 时间还没对上（SNTP 未完成）时显示“待命”，绝不显示 1970 年的错误时间。
+// 刷新：进 IDLE 时立即刷一次（bridge_set_state）；IDLE 循环里每分钟变了就刷
+// （main_task 末尾的 IDLE 分支，每 50ms 检查一次，分钟没变直接返回）。
+// 对话中（RECORDING/UPLOADING/WAITING/PLAYING）不显示时钟，状态栏改显示当前阶段；
+// 表情 + 字幕不受影响（仍由 bridge_set_state / bridge_hal_show_text 控制）。
+static const char* const kWeekdayZh[7] = {"周日", "周一", "周二", "周三", "周四", "周五", "周六"};
+// 上次显示的分钟（HH*60+MM）；-1=尚未显示/需立即刷新；-2=时间未对上，正显示“待命”。
+static int g_last_clock_min = -1;
+
+static void bridge_clock_refresh(bool force) {
+    if (g_state != ST_IDLE) return;  // 只在空闲显示时钟
+    time_t now = time(NULL);
+    struct tm tm_now;
+    localtime_r(&now, &tm_now);
+    if (tm_now.tm_year < 2025 - 1900) {
+        // 时间还没对上（SNTP 未完成）：显示“待命”，不再是“正在初始化”。
+        if (force || g_last_clock_min != -2) {
+            g_last_clock_min = -2;
+            bridge_hal_set_status("待命");
+        }
+        return;
+    }
+    int cur_min = tm_now.tm_hour * 60 + tm_now.tm_min;
+    // 分钟没变不重复刷；但刚从“待命”切过来时（g_last_clock_min==-2，
+    // 时间刚对上），cur_min != -2，一定会刷，时钟在对时后 50ms 内即出现。
+    if (!force && cur_min == g_last_clock_min) return;
+    g_last_clock_min = cur_min;
+    char time_str[16];
+    char date_str[32];
+    strftime(time_str, sizeof(time_str), "%H:%M", &tm_now);
+    strftime(date_str, sizeof(date_str), "%m月%d日", &tm_now);
+    char buf[64];
+    // 例："14:35 11月17日 周二"。状态栏宽 270px，这串约 170px，单行放得下，不滚动。
+    snprintf(buf, sizeof(buf), "%s %s %s", time_str, date_str, kWeekdayZh[tm_now.tm_wday]);
+    bridge_hal_set_status(buf);
+}
+
+// 统一改状态：换表情 + 记一次活动 + 更新状态栏。
 static void bridge_set_state(bridge_state_t s) {
     g_state = s;
     if (s == ST_RECORDING) g_reply_shown = false;  // 新对话：旧回复字幕不再停留
     bridge_hal_set_emotion(emotion_for_state(s));
+    // 状态栏：空闲显示时钟，对话中显示当前阶段。替代卡住的“正在初始化”。
+    // 注意：这里只改顶部状态条；表情（上）和字幕（下）由各自的调用负责，不受影响。
+    switch (s) {
+        case ST_IDLE:
+            g_last_clock_min = -1;  // 强制立即刷新时钟
+            bridge_clock_refresh(true);
+            break;
+        case ST_RECORDING:
+            bridge_hal_set_status("聆听中");
+            break;
+        case ST_UPLOADING:
+            bridge_hal_set_status("上传中");
+            break;
+        case ST_WAITING:
+            bridge_hal_set_status("等待回复");
+            break;
+        case ST_PLAYING:
+            bridge_hal_set_status("播放中");
+            break;
+    }
     touch_activity();
 }
 
@@ -354,6 +415,10 @@ static void main_task(void* arg) {
                     ESP_LOGI(TAG, "idle %d min: backlight off", BRIDGE_IDLE_SLEEP_MINUTES);
                 }
             }
+            // 空闲时钟：分钟变了就刷新状态栏（bridge_clock_refresh 内部判分钟，
+            // 未变直接返回，开销只是一次 time()）。屏幕已关（自动睡眠）时也照常
+            // 更新 label，唤醒后即是当前时间，无需额外处理。
+            bridge_clock_refresh(false);
             vTaskDelay(pdMS_TO_TICKS(50));
         }
     }

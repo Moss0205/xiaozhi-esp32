@@ -1,6 +1,6 @@
-// 桥接硬件适配层 —— 把「板子能做的事」收成 8 个函数，应用层（bridge_app）
-// 只调这 8 个，不直接碰 codec / display / WiFi 的上游 API。
-// 这样 dsh 集成时只需在 huanzhu_hal.cc 里把这 8 个函数接到 fork 已有的类上，
+// 桥接硬件适配层 —— 把「板子能做的事」收成 9 个函数，应用层（bridge_app）
+// 只调这 9 个，不直接碰 codec / display / WiFi 的上游 API。
+// 这样 dsh 集成时只需在 huanzhu_hal.cc 里把这 9 个函数接到 fork 已有的类上，
 // 应用层代码一行不用改；上游 API 若有出入，也只改 hal 文件。
 #ifndef _BRIDGE_HAL_H_
 #define _BRIDGE_HAL_H_
@@ -14,6 +14,12 @@ extern "C" {
 
 // 在圆屏上显示一行文字（走 fork 的圆屏字幕修正，字会落在内切圆里）。
 void bridge_hal_show_text(const char* text);
+
+// 设置顶部状态栏文字（上游 LvglDisplay::SetStatus，更新 status_label_）。
+// 桥接版用它显示空闲时钟（"14:35 11月17日 周二"）和对话阶段（"聆听中"等），
+// 替代 SetupUI 后一直卡住的“正在初始化...”。与 bridge_hal_show_text 不同：
+// show_text 写的是底部字幕条（对话文字），set_status 写的是顶部状态条。
+void bridge_hal_set_status(const char* status);
 
 // 按名字切表情（assets 分区 index.json 里的名字，如 "neutral"）。
 // 表情图由上游 LcdDisplay::SetEmotion 渲染；分区里没有对应表情时回退字体表情。

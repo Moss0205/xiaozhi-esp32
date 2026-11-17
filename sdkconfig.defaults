@@ -33,6 +33,12 @@ CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
 CONFIG_NEWLIB_NANO_FORMAT=y
 CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=n
 
+# 幻珠桥接版时钟（2026-11-17）：SNTP 对时。桥接版不跑小智 OTA，系统时间从未被设置，
+# 状态栏一直卡在“正在初始化”。用 esp_netif_sntp（ntp.aliyun.com）对时 + CST-8 时区，
+# 空闲时状态栏显示时间日期。只编译进 SNTP 客户端代码，不跑小智 OTA 的板子不受影响
+# （SNTP 需显式调 esp_netif_sntp_init 才会启动）。
+CONFIG_LWIP_SNTP=y
+
 CONFIG_CODEC_I2C_BACKWARD_COMPATIBLE=n
 
 # Fix ML307 FIFO Overflow
