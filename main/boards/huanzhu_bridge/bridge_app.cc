@@ -137,9 +137,9 @@ typedef struct {
     int debounce_count;   // 连续同电平计数
     TickType_t press_tick;  // 按下时刻
     bool long_fired;      // 长按已触发过（松开时不再发短按）
-} key_t;
+} bridge_key_t;
 
-static key_t g_keys[3] = {
+static bridge_key_t g_keys[3] = {
     {KEY_UP_GPIO, "UP", 1, 0, 0, false},
     {KEY_PRESS_GPIO, "PRESS", 1, 0, 0, false},
     {KEY_DOWN_GPIO, "DOWN", 1, 0, 0, false},
@@ -169,7 +169,7 @@ static void key_task(void* arg) {
     const int debounce_ticks = KEY_DEBOUNCE_MS / KEY_POLL_MS;
     for (;;) {
         for (int i = 0; i < 3; i++) {
-            key_t* k = &g_keys[i];
+            bridge_key_t* k = &g_keys[i];
             int level = gpio_get_level(k->gpio);
             if (level != k->last_level) {
                 // 电平变了：先消抖，连续 debounce_ticks 次同电平才认。
