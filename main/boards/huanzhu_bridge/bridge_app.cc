@@ -262,12 +262,16 @@ typedef struct {
     TickType_t press_tick;  // 按下时刻
     bool long_fired;      // 长按已触发过（松开时不再发短按）
     bool very_long_fired; // 中间 3 秒已触发过重启（信息屏改动新增）
+    // “在听”卡住修复（2026-11-18）：录音中按中键，按下即停（不等松开）。
+    // 按下时若正在录音，置位此标志并立即切到 UPLOADING；松开时看到此标志
+    // 就什么都不做（尤其不进配网），防止“按住超 800ms 被当长按进配网”。
+    bool rec_stop_armed;
 } bridge_key_t;
 
 static bridge_key_t g_keys[3] = {
-    {KEY_UP_GPIO, "UP", 1, 0, 0, false, false},
-    {KEY_PRESS_GPIO, "PRESS", 1, 0, 0, false, false},
-    {KEY_DOWN_GPIO, "DOWN", 1, 0, 0, false, false},
+    {KEY_UP_GPIO, "UP", 1, 0, 0, false, false, false},
+    {KEY_PRESS_GPIO, "PRESS", 1, 0, 0, false, false, false},
+    {KEY_DOWN_GPIO, "DOWN", 1, 0, 0, false, false, false},
 };
 
 static void log_raw_levels(const char* why) {
@@ -322,6 +326,16 @@ static void key_task(void* arg) {
                         k->press_tick = xTaskGetTickCount();
                         k->long_fired = false;
                         k->very_long_fired = false;
+                        k->rec_stop_armed = false;
+                        // “在听”卡住修复（2026-11-18）：录音中按中键，按下即停，
+                        // 不等松开。否则按住超 800ms 会被当成长按进配网，录音停不掉。
+                        // 停的动作就是 on_key_short(1) 在 ST_RECORDING 时做的事
+                        // （切到 UPLOADING，主任务随后上传并进“想”）。
+                        if (i == 1 && g_state == ST_RECORDING) {
+                            k->rec_stop_armed = true;
+                            bridge_set_state(ST_UPLOADING);
+                            ESP_LOGI(TAG, "key PRESS down during recording: stop now");
+                        }
                         touch_activity();  // 睡眠中按下的第一下先唤醒屏幕，再走正常语义
                         log_raw_levels(k->name);
 #if BRIDGE_KEY_LOG_ONLY
@@ -331,7 +345,12 @@ static void key_task(void* arg) {
                         // 松开：若长按没触发过，按住时长 < 阈值 = 短按
                         TickType_t held_ms =
                             (xTaskGetTickCount() - k->press_tick) * portTICK_PERIOD_MS;
-                        if (!k->long_fired && held_ms < KEY_LONG_PRESS_MS) {
+                        if (k->rec_stop_armed) {
+                            // 本次按下已在录音中直接停了录音（按下即停），松开时
+                            // 什么都不做——尤其不进配网（否则按住超 800ms 再松开
+                            // 会先停录音又进配网）。3 秒重启若已触发，松开也不重复。
+                            k->rec_stop_armed = false;
+                        } else if (!k->long_fired && held_ms < KEY_LONG_PRESS_MS) {
 #if !BRIDGE_KEY_LOG_ONLY
                             on_key_short(i);
 #endif
@@ -416,6 +435,9 @@ static void on_key_short(int idx) {
             ESP_LOGI(TAG, "key PRESS short: start recording");
         } else if (g_state == ST_RECORDING) {
             // 结束录音、上传并进入“想”（主任务检测到后上传并进 WAITING）。
+            // 注意：正常情况下停已经在“按下”时就发生了（key_task 的
+            // rec_stop_armed，按下即停，不等松开），这里是兜底——万一按下时
+            // 状态还没变到 ST_RECORDING，松开时再补一次停。
             bridge_set_state(ST_UPLOADING);
             ESP_LOGI(TAG, "key PRESS short: stop recording, upload");
         } else {
@@ -489,11 +511,24 @@ static void main_task(void* arg) {
     for (;;) {
         if (g_state == ST_RECORDING) {
             g_stop_playback = false;  // 上次播报若被打断，标志必须清掉，否则下次播报会立刻停
-            // 录音循环：每次读 320 样本（16k 下 20ms），直到下拨短按切到 UPLOADING、
+            // 录音循环：每次读 320 样本（16k 下 20ms），直到中键按下切到 UPLOADING、
             // 或 30 秒上限。注意：录音时主任务独占，轮询按键靠 key_task 并行跑。
             size_t got = 0;
             int16_t tmp[320];
+            // “在听”卡住修复（2026-11-18）：墙钟超时起点。原来的 30 秒上限是
+            // “采样数”上限（got 涨到 rec_max 才停），麦克风一旦不给数据
+            // （Read 恒返 0），got 永远涨不到上限，循环永不退出。加墙钟计时：
+            // 从开始录音起算，到 BRIDGE_RECORD_TIMEOUT_MS（30 秒，与采样上限一致）
+            // 还没出来就强制结束上传，绝不在“聆听中”卡死。
+            TickType_t rec_start_tick = xTaskGetTickCount();
             while (g_state == ST_RECORDING && got < rec_max) {
+                TickType_t elapsed_ms =
+                    (xTaskGetTickCount() - rec_start_tick) * portTICK_PERIOD_MS;
+                if (elapsed_ms >= (TickType_t)BRIDGE_RECORD_TIMEOUT_MS) {
+                    ESP_LOGW(TAG, "record timeout %d ms (got %u samples), force upload",
+                             BRIDGE_RECORD_TIMEOUT_MS, (unsigned)got);
+                    break;
+                }
                 int n = bridge_hal_mic_read(tmp, 320);
                 if (n > 0) {
                     if (got + (size_t)n > rec_max) n = (int)(rec_max - got);
@@ -504,7 +539,7 @@ static void main_task(void* arg) {
                 }
             }
             if (g_state == ST_RECORDING) {
-                // 30 秒上限到，同样走上传
+                // 30 秒上限到（采样数上限或墙钟超时），同样走上传
                 bridge_set_state(ST_UPLOADING);
             }
             // UPLOADING：上传录音，拿听写文本（服务端已入队，MOSS 轮询后会回）
@@ -512,7 +547,12 @@ static void main_task(void* arg) {
             int voice_id = -1;
             char heard[512];
             heard[0] = '\0';
-            if (got > 0 && bridge_post_voice(rec, got, &voice_id, heard, sizeof(heard))) {
+            if (got == 0) {
+                // 录到了 0 样本（麦克风没给数据，常见于墙钟超时把空录音顶出来）：
+                // 不是桥接连不上，是没听到声音，别误报成网络问题。
+                bridge_hal_show_text("没听到声音，再说一次");
+                bridge_set_state(ST_IDLE);
+            } else if (bridge_post_voice(rec, got, &voice_id, heard, sizeof(heard))) {
                 if (voice_id < 0 || heard[0] == '\0') {
                     bridge_hal_show_text("没听清，再说一次");
                     bridge_set_state(ST_IDLE);
