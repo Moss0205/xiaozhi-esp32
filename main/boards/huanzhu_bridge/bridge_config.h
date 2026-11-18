@@ -55,9 +55,13 @@
 //   下拨短按  = 结束对话（停录音并上传；播放中按 = 打断播报并开始录音）
 //   上拨长按  = 音量 +10
 //   下拨长按  = 音量 -10
-//   中间短按  = 进入 WiFi 配网（必须保留，否则丢了不拆机重配网的入口）
-//   中间长按  = 重启（逃生口）
-#define KEY_LONG_PRESS_MS   800   // 按住 >=800ms 算长按，否则算短按
+//   中间短按  = 循环切屏（聊天/时钟 → 服务状态 → 天气 → AI 用量 → 回聊天）
+//   中间长按  = 按住 800ms~3s 松开：进入 WiFi 配网（换 WiFi 的入口，必须保留）
+//   中间按住 3 秒 = 重启（逃生口，到点立即重启，不等松开）
+#define KEY_LONG_PRESS_MS   800   // 上/下拨长按阈值；中键用它作为"配网候选"起点
+#ifndef KEY_RESTART_HOLD_MS
+#define KEY_RESTART_HOLD_MS 3000  // 中键按住到这个毫秒数直接重启
+#endif
 #define KEY_DEBOUNCE_MS     20    // 消抖
 #define KEY_POLL_MS         10    // 按键轮询间隔
 
@@ -82,6 +86,39 @@
 // 例如：idf.py build -DBRIDGE_TOKEN='"你的token"'，或在 sdkconfig 里定义。
 #ifndef BRIDGE_TOKEN
 #define BRIDGE_TOKEN "change-me"
+#endif
+
+// ---------------- API 用量显示（2026-11-17）----------------
+// 空闲顶栏在「时钟」与「API 用量」之间轮换显示。用量来自 Sub2API 兼容的
+// GET /v1/usage，本机实测为 api.beichenapi.com（返回 balance / usage.today /
+// usage.total）。API key 由 CI 经 bridge_token_override.h 从 secret 注入，
+// 默认空字符串 = 不拉取、顶栏只显示时钟，不带 key 编译也安全。
+#ifndef BRIDGE_USAGE_KEY
+#define BRIDGE_USAGE_KEY ""
+#endif
+#ifndef BRIDGE_USAGE_URL
+#define BRIDGE_USAGE_URL "https://api.beichenapi.com/v1/usage"
+#endif
+// 拉取间隔（分钟）：公益站响应慢，别拉太频繁；失败只打印日志，顶栏保持上次值。
+#ifndef BRIDGE_USAGE_REFRESH_MINUTES
+#define BRIDGE_USAGE_REFRESH_MINUTES 15
+#endif
+// 顶栏轮换周期（秒）：保留兼容，2026-11-18 起页面改由中键短按手动切换，此值不再使用。
+#ifndef BRIDGE_STATUS_ROTATE_SEC
+#define BRIDGE_STATUS_ROTATE_SEC 12
+#endif
+
+// ---------------- 天气显示（2026-11-17）----------------
+// 天气用 wttr.in 免 key 接口（国内可直连、HTTPS、返回 JSON）。用经纬度最准：
+// 默认江苏南通海安（32.53,120.45）—— 用户实测所在地。换地方改这两个数即可。
+#ifndef BRIDGE_WEATHER_LAT
+#define BRIDGE_WEATHER_LAT "32.53"
+#endif
+#ifndef BRIDGE_WEATHER_LON
+#define BRIDGE_WEATHER_LON "120.45"
+#endif
+#ifndef BRIDGE_WEATHER_URL
+#define BRIDGE_WEATHER_URL "https://wttr.in/" BRIDGE_WEATHER_LAT "," BRIDGE_WEATHER_LON "?format=j1"
 #endif
 
 // ---------------- 行为阈值 ----------------

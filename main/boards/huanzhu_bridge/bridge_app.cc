@@ -73,6 +73,94 @@ static const char* const kWeekdayZh[7] = {"周日", "周一", "周二", "周三"
 // 上次显示的分钟（HH*60+MM）；-1=尚未显示/需立即刷新；-2=时间未对上，正显示“待命”。
 static int g_last_clock_min = -1;
 
+// ---------------- IDLE 顶栏四页（2026-11-17 / 11-18）----------------
+// 页面由中键短按手动循环切换，不再自动轮换：
+//   0=聊天/时钟  1=服务状态  2=天气  3=AI 用量
+// usage_task 后台定时拉 beichenapi /v1/usage（BRIDGE_USAGE_KEY 由 CI secret 注入）
+// 与 wttr.in 天气，并每 60 秒 ping 一次桥接服务；结果缓存到下面全局变量。
+// 未配置 key 时（默认编译 / 不带 secret）AI 用量页自动跳过，不影响其它三页。
+static long g_usage_balance_cents = -1;   // 余额，单位分（-1=尚未拉取/失败）
+static long g_usage_today_tokens = -1;    // 今日 token 数
+static int  g_usage_today_requests = -1;  // 今日请求数
+static bool g_usage_valid = false;
+static int  g_weather_temp_c = 0;         // 当前温度（摄氏度）
+static int  g_weather_code = -1;          // WMO 天气代码
+static bool g_weather_valid = false;
+static bool g_service_online = false;     // 桥接服务可达（BRIDGE_HOST:BRIDGE_PORT）
+static int  g_status_page = 0;            // 0=时钟 1=服务状态 2=天气 3=AI 用量
+
+// 各页上次显示值，避免 50ms 空闲循环里重复刷 LVGL；切页时统一重置。
+static long s_last_bal = -2, s_last_tok = -2;
+static bool s_last_valid = false;
+static int  s_last_temp = 999, s_last_code = -999;
+static bool s_last_wx_valid = false;
+static bool s_last_service = false;
+static bool s_last_service_shown = false;
+
+static void bridge_status_invalidate(void) {
+    s_last_bal = -2; s_last_tok = -2; s_last_valid = false;
+    s_last_temp = 999; s_last_code = -999; s_last_wx_valid = false;
+    s_last_service = false; s_last_service_shown = false;
+    g_last_clock_min = -1;
+}
+
+// 天气代码 → 中文短描述（顶栏单行，控制在 4 字内）。
+// wttr.in 的 weatherCode 基于 WMO：0-99 标准；霾类扩展码(>100)按 wttr.in 常见值补。
+static const char* weather_text(int code) {
+    if (code == 0) return "晴";
+    if (code == 1) return "少云";
+    if (code == 2) return "多云";
+    if (code == 3) return "阴";
+    if (code == 45 || code == 48) return "雾";
+    if (code >= 51 && code <= 57) return "毛毛雨";
+    if (code >= 61 && code <= 67) return "雨";
+    if (code >= 71 && code <= 77) return "雪";
+    if (code >= 80 && code <= 82) return "阵雨";
+    if (code >= 85 && code <= 86) return "阵雪";
+    if (code == 95) return "雷雨";
+    if (code >= 96) return "雷暴";
+    // wttr.in 扩展码：霾/沙尘等（如 149=Smoky haze）。
+    if (code >= 100 && code <= 149) return "霾";
+    return "天气";
+}
+
+static void usage_task(void* arg) {
+    (void)arg;
+    // 开机后等网络与 SNTP 起来（bridge_main 已启动 SNTP）再拉第一次，避免 DNS 未就绪。
+    vTaskDelay(pdMS_TO_TICKS(20000));
+    int minute_tick = 0;  // 每 60s 探一次服务；每 15 分钟拉一次用量/天气
+    for (;;) {
+        // 服务状态：只探桥接服务本身（局域网，毫秒级），失败不影响其它页。
+        bool svc = bridge_ping();
+        if (svc != g_service_online) {
+            g_service_online = svc;
+            ESP_LOGI(TAG, "bridge service %s", svc ? "ONLINE" : "OFFLINE");
+        }
+        if (minute_tick == 0) {
+            long bal = -1, tok = -1;
+            int req = -1;
+            if (bridge_fetch_usage(&bal, &tok, &req)) {
+                g_usage_balance_cents = bal;
+                g_usage_today_tokens = tok;
+                g_usage_today_requests = req;
+                g_usage_valid = true;
+            } else {
+                g_usage_valid = false;  // 拉取失败：用量页显示"用量暂不可用"，不影响其它页
+            }
+            int temp = 0, code = -1;
+            if (bridge_fetch_weather(&temp, &code)) {
+                g_weather_temp_c = temp;
+                g_weather_code = code;
+                g_weather_valid = true;
+            } else {
+                g_weather_valid = false;
+            }
+        }
+        if (++minute_tick >= BRIDGE_USAGE_REFRESH_MINUTES) minute_tick = 0;
+        vTaskDelay(pdMS_TO_TICKS(60 * 1000));
+    }
+}
+
 static void bridge_clock_refresh(bool force) {
     if (g_state != ST_IDLE) return;  // 只在空闲显示时钟
     time_t now = time(NULL);
@@ -101,6 +189,64 @@ static void bridge_clock_refresh(bool force) {
     bridge_hal_set_status(buf);
 }
 
+// IDLE 顶栏统一入口：页面由中键短按手动切换，这里只负责「当前页」的显示与重绘。
+// force=true 表示立即重绘（切页 / 回 IDLE），不重置页码。
+static void bridge_status_update(bool force) {
+    if (g_state != ST_IDLE) return;
+
+    if (g_status_page == 0) {
+        bridge_clock_refresh(force);
+        return;
+    }
+
+    char buf[64];
+
+    // 页 1：服务状态。usage_task 每 60 秒 ping 一次桥接服务。
+    if (g_status_page == 1) {
+        if (force || !s_last_service_shown || g_service_online != s_last_service) {
+            s_last_service = g_service_online;
+            s_last_service_shown = true;
+            snprintf(buf, sizeof(buf), "服务%s %s",
+                     g_service_online ? "在线" : "离线", BRIDGE_HOST);
+            bridge_hal_set_status(buf);
+        }
+        return;
+    }
+
+    // 页 2：天气。
+    if (g_status_page == 2) {
+        if (force || g_weather_valid != s_last_wx_valid ||
+            (g_weather_valid && (g_weather_temp_c != s_last_temp || g_weather_code != s_last_code))) {
+            s_last_temp = g_weather_temp_c;
+            s_last_code = g_weather_code;
+            s_last_wx_valid = g_weather_valid;
+            if (g_weather_valid) {
+                snprintf(buf, sizeof(buf), "海安 %d°C %s", g_weather_temp_c, weather_text(g_weather_code));
+            } else {
+                snprintf(buf, sizeof(buf), "天气暂不可用");
+            }
+            bridge_hal_set_status(buf);
+        }
+        return;
+    }
+
+    // 页 3：AI 用量（无 key 时切屏逻辑会跳过，不会进到这里）。
+    if (force || g_usage_valid != s_last_valid ||
+        (g_usage_valid && (g_usage_balance_cents != s_last_bal || g_usage_today_tokens != s_last_tok))) {
+        s_last_bal = g_usage_balance_cents;
+        s_last_tok = g_usage_today_tokens;
+        s_last_valid = g_usage_valid;
+        if (g_usage_valid && g_usage_balance_cents >= 0) {
+            long today_k = g_usage_today_tokens >= 0 ? g_usage_today_tokens / 1000 : 0;
+            snprintf(buf, sizeof(buf), "$%ld.%02ld 今日%ldk tok",
+                     g_usage_balance_cents / 100, g_usage_balance_cents % 100, today_k);
+        } else {
+            snprintf(buf, sizeof(buf), "用量暂不可用");
+        }
+        bridge_hal_set_status(buf);
+    }
+}
+
 // 统一改状态：换表情 + 记一次活动 + 更新状态栏。
 static void bridge_set_state(bridge_state_t s) {
     g_state = s;
@@ -110,8 +256,10 @@ static void bridge_set_state(bridge_state_t s) {
     // 注意：这里只改顶部状态条；表情（上）和字幕（下）由各自的调用负责，不受影响。
     switch (s) {
         case ST_IDLE:
-            g_last_clock_min = -1;  // 强制立即刷新时钟
-            bridge_clock_refresh(true);
+            // 对话结束回到首页（聊天/时钟）；手动切到的页不跨对话保留。
+            g_status_page = 0;
+            bridge_status_invalidate();
+            bridge_status_update(true);
             break;
         case ST_RECORDING:
             bridge_hal_set_status("聆听中");
@@ -201,10 +349,21 @@ static void key_task(void* arg) {
                         ESP_LOGI(TAG, "KEY_LOG_ONLY: %s pressed, no action", k->name);
 #endif
                     } else if (old == 0 && level == 1) {
-                        // 松开：若长按没触发过，按住时长 < 阈值 = 短按
+                        // 松开：按按住时长分档触发。中键三档，上下键维持两档。
                         TickType_t held_ms =
                             (xTaskGetTickCount() - k->press_tick) * portTICK_PERIOD_MS;
-                        if (!k->long_fired && held_ms < KEY_LONG_PRESS_MS) {
+                        if (i == 1) {
+                            // 中键：<800ms 切屏；800ms~3s 配网；>=3s 已在按住时重启。
+                            if (held_ms < KEY_LONG_PRESS_MS) {
+#if !BRIDGE_KEY_LOG_ONLY
+                                on_key_short(i);
+#endif
+                            } else if (held_ms < KEY_RESTART_HOLD_MS && !k->long_fired) {
+#if !BRIDGE_KEY_LOG_ONLY
+                                on_key_long(i);
+#endif
+                            }
+                        } else if (!k->long_fired && held_ms < KEY_LONG_PRESS_MS) {
 #if !BRIDGE_KEY_LOG_ONLY
                             on_key_short(i);
 #endif
@@ -214,15 +373,22 @@ static void key_task(void* arg) {
             } else {
                 pending_level[i] = level;
                 k->debounce_count = 0;
-                // 按住中：到阈值且未触发过 = 长按（只触发一次）
+                // 按住中：上下拨 800ms 触发音量；中键要满 3 秒才直接重启，
+                // 800ms~3s 之间不动作，松开时由上面分支进入配网。
                 if (level == 0 && !k->long_fired) {
                     TickType_t held_ms =
                         (xTaskGetTickCount() - k->press_tick) * portTICK_PERIOD_MS;
-                    if (held_ms >= KEY_LONG_PRESS_MS) {
+                    TickType_t threshold = (i == 1) ? KEY_RESTART_HOLD_MS : KEY_LONG_PRESS_MS;
+                    if (held_ms >= threshold) {
                         k->long_fired = true;
                         log_raw_levels(k->name);
 #if !BRIDGE_KEY_LOG_ONLY
-                        on_key_long(i);
+                        if (i == 1) {
+                            ESP_LOGI(TAG, "key PRESS held 3s: restart");
+                            bridge_hal_restart();
+                        } else {
+                            on_key_long(i);
+                        }
 #endif
                     }
                 }
@@ -250,9 +416,15 @@ static void on_key_short(int idx) {
             bridge_hal_show_text("你好MOSS");
             ESP_LOGI(TAG, "key DOWN short: cancel waiting");
         }
-    } else {  // 中间短按：配网
-        ESP_LOGI(TAG, "key PRESS short: enter wifi config");
-        bridge_hal_enter_wifi_config();
+    } else {  // 中间短按：循环切屏（聊天/时钟 → 服务状态 → 天气 → AI 用量 → 回聊天）
+        bool has_key = (BRIDGE_USAGE_KEY[0] != '\0');
+        int next = g_status_page + 1;
+        if (next == 3 && !has_key) next = 0;  // 没配 key：跳过 AI 用量页
+        if (next > 3) next = 0;
+        g_status_page = next;
+        bridge_status_invalidate();
+        bridge_status_update(true);  // 非 IDLE 时内部直接返回，回 IDLE 后显示新页
+        ESP_LOGI(TAG, "key PRESS short: status page %d", g_status_page);
     }
 }
 
@@ -264,8 +436,8 @@ static void on_key_long(int idx) {
         if (g_volume - BRIDGE_VOLUME_STEP >= 0) g_volume -= BRIDGE_VOLUME_STEP;
         ESP_LOGI(TAG, "key DOWN long: volume %d", g_volume);
     } else {
-        ESP_LOGI(TAG, "key PRESS long: restart");
-        bridge_hal_restart();
+        ESP_LOGI(TAG, "key PRESS long 800ms~3s: enter wifi config");
+        bridge_hal_enter_wifi_config();
     }
 }
 
@@ -415,18 +587,19 @@ static void main_task(void* arg) {
                     ESP_LOGI(TAG, "idle %d min: backlight off", BRIDGE_IDLE_SLEEP_MINUTES);
                 }
             }
-            // 空闲时钟：分钟变了就刷新状态栏（bridge_clock_refresh 内部判分钟，
-            // 未变直接返回，开销只是一次 time()）。屏幕已关（自动睡眠）时也照常
-            // 更新 label，唤醒后即是当前时间，无需额外处理。
-            bridge_clock_refresh(false);
+            // 空闲顶栏：显示中键短按选中的当前页；bridge_status_update 内部判刷新时机。
+            // 屏幕已关（自动睡眠）时也照常更新 label，唤醒后即当前值。
+            bridge_status_update(false);
             vTaskDelay(pdMS_TO_TICKS(50));
         }
     }
 }
 
 void bridge_app_start(void) {
-    xTaskCreate(key_task, "bridge_keys", 8192, NULL, 5, NULL);  // 栈加深：中间短按会在本任务里同步开配网 AP
+    xTaskCreate(key_task, "bridge_keys", 8192, NULL, 5, NULL);  // 栈加深：中键长按会在本任务里同步开配网 AP
     xTaskCreate(main_task, "bridge_main", 8192, NULL, 5, NULL);
+    // 后台探测任务：每 60s ping 桥接服务；每 15 分钟拉天气/用量（无 key 时用量内部跳过）。
+    xTaskCreate(usage_task, "bridge_usage", 8192, NULL, 5, NULL);
 }
 
 int bridge_app_volume(void) {

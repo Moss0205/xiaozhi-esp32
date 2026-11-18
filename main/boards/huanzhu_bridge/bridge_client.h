@@ -31,6 +31,24 @@ bool bridge_poll_reply(int after_id, int* out_id,
 // 服务端音频文件还在，不会丢）。0 表示该 id 没有音频（纯文字回复）。
 int bridge_download_audio(int id, int16_t* pcm_out, size_t max_samples);
 
+// 探测桥接服务是否可达（GET /esp/reply?after=INT_MAX，只要拿到 HTTP 状态码即算在线）。
+// 用一个绝不存在的 after id，不会取走任何回复、不消耗语音队列；供"服务状态"页显示。
+bool bridge_ping(void);
+
+// 拉取 API 用量（GET https://.../v1/usage，Sub2API 兼容协议）。
+// 成功返回 true 并填出参：
+//   balance_cents : 余额，单位「分」（USD*100 四舍五入），如 1589 = $15.89
+//   today_tokens  : 今日总 token 数
+//   today_requests: 今日请求数
+// 需要 HTTPS + Bearer key；key 来自 BRIDGE_USAGE_KEY（CI 注入，默认空不用）。
+bool bridge_fetch_usage(long* balance_cents, long* today_tokens, int* today_requests);
+
+// 拉取天气（GET https://wttr.in/<city>?format=j1，免 key）。
+// 成功返回 true 并填：
+//   temp_c      : 当前温度（摄氏度）
+//   weather_code: WMO 天气代码，交给应用层映射中文
+bool bridge_fetch_weather(int* temp_c, int* weather_code);
+
 #ifdef __cplusplus
 }
 #endif

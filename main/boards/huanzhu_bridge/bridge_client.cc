@@ -62,7 +62,161 @@ static bool json_int(const char* json, const char* key, int* out) {
     if (p == NULL) return false;
     p = strchr(p + strlen(pattern), ':');
     if (p == NULL) return false;
-    *out = atoi(p + 1);
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+    // wttr.in 把数字也当字符串返回（"temp_C":"15"），beichen 返回裸数字（"requests":0）。
+    // 两种都支持：若有引号先跳过，再 atoi。atoi 遇非数字返回 0，调用方已初始化默认值。
+    if (*p == '"') p++;
+    *out = atoi(p);
+    return true;
+}
+
+// 取浮点字段（余额 balance 是小数）。用 strtod 读到第一个非数字为止。
+static bool json_double(const char* json, const char* key, double* out) {
+    char pattern[32];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char* p = strstr(json, pattern);
+    if (p == NULL) return false;
+    p = strchr(p + strlen(pattern), ':');
+    if (p == NULL) return false;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p < '0' || *p > '9') return false;  // 负数余额无意义，直接拒
+    *out = atof(p);
+    return true;
+}
+
+bool bridge_fetch_usage(long* balance_cents, long* today_tokens, int* today_requests) {
+    if (balance_cents) *balance_cents = -1;
+    if (today_tokens) *today_tokens = -1;
+    if (today_requests) *today_requests = -1;
+
+    const char* key = BRIDGE_USAGE_KEY;
+    if (key == NULL || key[0] == '\0') {
+        ESP_LOGD(TAG, "usage fetch skipped: no API key configured");
+        return false;
+    }
+
+    auto http = Board::GetInstance().GetNetwork()->CreateHttp(0);
+    char auth[512];
+    snprintf(auth, sizeof(auth), "Bearer %s", key);
+    http->SetHeader("Authorization", auth);
+    http->SetHeader("Accept", "application/json");
+
+    if (auto opened = http->Open("GET", BRIDGE_USAGE_URL); !opened) {
+        ESP_LOGE(TAG, "usage GET open failed: %s", opened.error().ToString().c_str());
+        return false;
+    }
+    auto status = http->GetStatusCode();
+    if (!status) {
+        ESP_LOGE(TAG, "usage GET status failed: %s", status.error().ToString().c_str());
+        return false;
+    }
+    std::string resp = http->ReadAll();
+    if (*status != 200) {
+        ESP_LOGE(TAG, "usage GET HTTP %d: %.200s", *status, resp.c_str());
+        return false;
+    }
+
+    double balance = 0;
+    if (!json_double(resp.c_str(), "balance", &balance)) {
+        ESP_LOGE(TAG, "usage JSON: no balance field: %.200s", resp.c_str());
+        return false;
+    }
+    if (balance_cents) *balance_cents = (long)(balance * 100.0 + 0.5);
+
+    // usage.today：服务端把 today 放在 total 之前。用 "total" 的位置截断 today 段，
+    // 避免在 daily_usage / model_stats 里撞到同名的 total_tokens / requests。
+    const char* usage_p = strstr(resp.c_str(), "\"usage\"");
+    const char* today_p = usage_p ? strstr(usage_p, "\"today\"") : NULL;
+    if (today_p) {
+        const char* total_p = strstr(today_p, "\"total\"");
+        size_t seg_len = total_p ? (size_t)(total_p - today_p) : strlen(today_p);
+        std::string today_seg(today_p, seg_len);
+        int tok = 0;
+        int req = 0;
+        json_int(today_seg.c_str(), "total_tokens", &tok);
+        json_int(today_seg.c_str(), "requests", &req);
+        if (today_tokens) *today_tokens = tok;
+        if (today_requests) *today_requests = req;
+    }
+
+    ESP_LOGI(TAG, "usage ok: balance_cents=%ld today_tokens=%ld requests=%d",
+             balance_cents ? *balance_cents : -1,
+             today_tokens ? *today_tokens : -1,
+             today_requests ? *today_requests : -1);
+    return true;
+}
+
+bool bridge_fetch_weather(int* temp_c, int* weather_code) {
+    if (temp_c) *temp_c = 0;
+    if (weather_code) *weather_code = -1;
+
+    auto http = Board::GetInstance().GetNetwork()->CreateHttp(0);
+    http->SetHeader("Accept", "application/json");
+    http->SetHeader("User-Agent", "curl/8.0");  // wttr.in 对默认 UA 偶有 403，伪装 curl
+
+    if (auto opened = http->Open("GET", BRIDGE_WEATHER_URL); !opened) {
+        ESP_LOGE(TAG, "weather GET open failed: %s", opened.error().ToString().c_str());
+        return false;
+    }
+    auto status = http->GetStatusCode();
+    if (!status) {
+        ESP_LOGE(TAG, "weather GET status failed: %s", status.error().ToString().c_str());
+        return false;
+    }
+    std::string resp = http->ReadAll();
+    if (*status != 200) {
+        ESP_LOGE(TAG, "weather GET HTTP %d: %.200s", *status, resp.c_str());
+        return false;
+    }
+
+    // 只取 current_condition 数组第一个对象：从 "current_condition" 后的第一个 '['
+    // 到第一个 ']'。避开 weather 数组其它日期/hourly 里同名的 temp_C / weatherCode。
+    const char* cc = strstr(resp.c_str(), "\"current_condition\"");
+    if (cc == NULL) {
+        ESP_LOGE(TAG, "weather JSON: no current_condition");
+        return false;
+    }
+    const char* lb = strchr(cc, '[');
+    const char* rb = lb ? strchr(lb, ']') : NULL;
+    if (lb == NULL || rb == NULL || rb <= lb) {
+        ESP_LOGE(TAG, "weather JSON: bad current_condition array");
+        return false;
+    }
+    std::string cur(lb, (size_t)(rb - lb));
+
+    int t = 0, code = -1;
+    // temp_C 是整数（wttr.in 当前温度不带小数），直接 json_int。
+    if (!json_int(cur.c_str(), "temp_C", &t)) {
+        ESP_LOGE(TAG, "weather JSON: no temp_C in current_condition");
+        return false;
+    }
+    json_int(cur.c_str(), "weatherCode", &code);
+    if (temp_c) *temp_c = t;
+    if (weather_code) *weather_code = code;
+
+    ESP_LOGI(TAG, "weather ok: temp_C=%d code=%d", t, code);
+    return true;
+}
+
+// 服务状态探测：只要能连上 HTTP 并拿到状态码就算"在线"（200/204 都算），
+// 与桥接 token 是否正确无关（token 错会返回 401，仍说明服务进程活着）。
+// 用 INT_MAX 当 after id，服务端不会有任何新回复可发，纯探测。
+bool bridge_ping(void) {
+    char path[64];
+    snprintf(path, sizeof(path), "/esp/reply?after=%d", 2147483647);
+    std::string url = build_url(path);
+    auto http = new_http();
+    if (auto opened = http->Open("GET", url); !opened) {
+        ESP_LOGD(TAG, "service ping open failed: %s", opened.error().ToString().c_str());
+        return false;
+    }
+    auto status = http->GetStatusCode();
+    if (!status) {
+        ESP_LOGD(TAG, "service ping status failed: %s", status.error().ToString().c_str());
+        return false;
+    }
     return true;
 }
 
