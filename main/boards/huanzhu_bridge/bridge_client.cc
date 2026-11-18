@@ -277,6 +277,16 @@ bool bridge_fetch_info(bridge_info_t* out) {
         json_long(json, "my_tokens_today", &out->my_tokens_today);
         json_double(json, "my_cost_usd", &out->my_cost_usd);
     }
+    // Muse 免费版每周限额（Muse 应用本身，subscription-status 命令）。
+    // muse_ok=false 表示桥接还没同步到 muse_usage.json。
+    out->muse_ok = json_bool(json, "muse_ok");
+    if (out->muse_ok) {
+        json_int(json, "muse_weekly_pct", &out->muse_weekly_pct);
+        json_string(json, "muse_reset_date", out->muse_reset_date,
+                    sizeof(out->muse_reset_date));
+        json_int(json, "muse_extra_pct", &out->muse_extra_pct);
+        json_int(json, "muse_extra_left_b", &out->muse_extra_left_b);
+    }
     // mengapi 用量。meng_configured=false 表示桥接 config.json 里没配令牌。
     out->meng_configured = json_bool(json, "meng_configured");
     out->meng_ok = json_bool(json, "meng_ok");
@@ -284,8 +294,8 @@ bool bridge_fetch_info(bridge_info_t* out) {
         json_double(json, "meng_balance_usd", &out->meng_balance_usd);
         json_double(json, "meng_used_usd", &out->meng_used_usd);
     }
-    ESP_LOGI(TAG, "info: wx_ok=%d my_ok=%d meng_cfg=%d meng_ok=%d",
-             (int)out->wx_ok, (int)out->my_ok,
+    ESP_LOGI(TAG, "info: wx_ok=%d my_ok=%d muse_ok=%d meng_cfg=%d meng_ok=%d",
+             (int)out->wx_ok, (int)out->my_ok, (int)out->muse_ok,
              (int)out->meng_configured, (int)out->meng_ok);
     return true;
 }

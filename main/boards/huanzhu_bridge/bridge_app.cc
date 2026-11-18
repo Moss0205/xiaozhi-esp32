@@ -113,7 +113,7 @@ static void bridge_clock_refresh(bool force) {
 // 另加隐藏表情的方法（见 README 的“已知限制”），不在本次桥接层改动里。
 typedef enum {
     SCR_CHAT = 0,       // 聊天/时钟（默认）
-    SCR_MY_USAGE,       // 我的用量（Claude Code）
+    SCR_MY_USAGE,       // 我的用量（Muse 每周限额 + Claude Code）
     SCR_MENG_USAGE,     // mengapi 用量
     SCR_WEATHER,        // 天气（近 3 天）
     SCR_COUNT,          // 屏数（循环用）
@@ -143,15 +143,25 @@ static void bridge_render_info_screen(void) {
     char buf[1024];
     buf[0] = '\0';
     if (g_screen == SCR_MY_USAGE) {
-        if (!g_info.my_ok) {
-            snprintf(buf, sizeof(buf), "我的用量\n未同步\n\n等 VM 同步脚本\n把用量推到桥接");
+        // 屏面 5 行：Muse 免费版每周限额（subscription-status）+ Claude Code 累计/花费。
+        // 今日那行省了，给 Muse 两行腾地方；两路取数互相独立，各自显示“未同步”。
+        int n = snprintf(buf, sizeof(buf), "我的用量\n");
+        if (g_info.muse_ok) {
+            n += snprintf(buf + n, sizeof(buf) - n,
+                          "Muse 免费版已用 %d%%\n%s重置\n",
+                          g_info.muse_weekly_pct, g_info.muse_reset_date);
         } else {
-            // token 数用千分位易读；花费是官方价估算，中转实际扣得更少。
-            snprintf(buf, sizeof(buf),
-                     "我的用量\n累计 %ld token\n今日 %ld token\n花费约 $%.2f",
-                     g_info.my_tokens_total, g_info.my_tokens_today,
-                     g_info.my_cost_usd);
+            n += snprintf(buf + n, sizeof(buf) - n, "Muse 免费版未同步\n");
         }
+        if (g_info.my_ok) {
+            // 花费是官方价估算，中转实际扣得更少。
+            n += snprintf(buf + n, sizeof(buf) - n,
+                          "累计 %ld token\n花费约 $%.2f",
+                          g_info.my_tokens_total, g_info.my_cost_usd);
+        } else {
+            n += snprintf(buf + n, sizeof(buf) - n, "Claude Code 未同步");
+        }
+        (void)n;
     } else if (g_screen == SCR_MENG_USAGE) {
         if (!g_info.meng_configured) {
             snprintf(buf, sizeof(buf), "mengapi 用量\n未配置\n\n把访问令牌和\n用户 ID 放进\n桥接 config.json");
@@ -375,37 +385,42 @@ static void key_task(void* arg) {
 }
 
 // 按键语义（bridge_config.h 的最终表；方向映射只由 KEY_*_GPIO 三行决定）。
+// 2026-11-18 按键重分配：上/下拨短按切屏（只在 IDLE），中键短按“听/想”切换。
 static void on_key_short(int idx) {
-    if (idx == 0) {  // 上拨短按：开始对话（播放中 = 打断并重录）
-        if (g_state == ST_PLAYING) g_stop_playback = true;
-        if (g_state == ST_IDLE || g_state == ST_PLAYING) {
-            // 对话开始自动切回聊天界面（信息屏改动）：复位屏号、取消未取完
-            // 的信息取数，之后 bridge_set_state 会渲染录音界面。
+    if (idx == 0) {  // 上拨短按：下一个屏（只在 IDLE；对话中忽略）
+        if (g_state == ST_IDLE) {
+            info_screen_t next = (info_screen_t)((g_screen + 1) % SCR_COUNT);
+            ESP_LOGI(TAG, "key UP short: screen %d -> %d", (int)g_screen, (int)next);
+            bridge_switch_screen(next);
+        } else {
+            ESP_LOGI(TAG, "key UP short: ignored during conversation");
+        }
+    } else if (idx == 2) {  // 下拨短按：上一个屏（反向循环；只在 IDLE）
+        if (g_state == ST_IDLE) {
+            info_screen_t prev =
+                (info_screen_t)((g_screen + SCR_COUNT - 1) % SCR_COUNT);
+            ESP_LOGI(TAG, "key DOWN short: screen %d -> %d", (int)g_screen, (int)prev);
+            bridge_switch_screen(prev);
+        } else {
+            ESP_LOGI(TAG, "key DOWN short: ignored during conversation");
+        }
+    } else {  // 中间短按：“听/想”切换
+        if (g_state == ST_IDLE) {
+            // 开始听：对话开始自动切回聊天界面（复位屏号、取消未取完的信息取数）。
             if (g_screen != SCR_CHAT) {
                 g_screen = SCR_CHAT;
                 g_info_dirty = false;
             }
             bridge_set_state(ST_RECORDING);
             bridge_hal_show_text("在听…");
-            ESP_LOGI(TAG, "key UP short: start recording");
-        }
-    } else if (idx == 2) {  // 下拨短按：结束对话
-        if (g_state == ST_RECORDING) {
-            bridge_set_state(ST_UPLOADING);  // 主任务检测到后上传并进 WAITING
-            ESP_LOGI(TAG, "key DOWN short: stop recording, upload");
-        } else if (g_state == ST_WAITING) {
-            bridge_set_state(ST_IDLE);
-            bridge_hal_show_text("你好MOSS");
-            ESP_LOGI(TAG, "key DOWN short: cancel waiting");
-        }
-    } else {  // 中间短按：循环切屏（聊天 → 我的用量 → mengapi 用量 → 天气 → 回聊天）
-        // 只在 IDLE 切屏；对话中（录音/上传/等回/播放）忽略，避免切屏
-        // 打断对话界面。
-        if (g_state == ST_IDLE) {
-            info_screen_t next = (info_screen_t)((g_screen + 1) % SCR_COUNT);
-            ESP_LOGI(TAG, "key PRESS short: screen %d -> %d", (int)g_screen, (int)next);
-            bridge_switch_screen(next);
+            ESP_LOGI(TAG, "key PRESS short: start recording");
+        } else if (g_state == ST_RECORDING) {
+            // 结束录音、上传并进入“想”（主任务检测到后上传并进 WAITING）。
+            bridge_set_state(ST_UPLOADING);
+            ESP_LOGI(TAG, "key PRESS short: stop recording, upload");
         } else {
+            // 上传中 / 等回 / 播放中：忽略。
+            // 注意：和 #17 不同，播放中按中键不再打断重录，等回时按中键也不再取消。
             ESP_LOGI(TAG, "key PRESS short: ignored during conversation");
         }
     }

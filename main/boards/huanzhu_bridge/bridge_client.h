@@ -36,6 +36,9 @@ int bridge_download_audio(int id, int16_t* pcm_out, size_t max_samples);
 // 服务端用扁平 JSON（便于板端用下面的轻量解析，不拉 JSON 库）：
 //   天气 3 天：wx0_date/wx0_cond/wx0_high/wx0_low/wx0_hum/wx0_wind，wx1_*, wx2_*
 //   我的用量（Claude Code）：my_ok, my_tokens_total, my_tokens_today, my_cost_usd
+//   Muse 免费版每周限额：muse_ok, muse_weekly_pct, muse_reset_date,
+//     muse_extra_pct, muse_extra_left_b（来自 VM 的 subscription-status 命令，
+//     不是 Claude Code 中转用量）
 //   mengapi：meng_configured, meng_ok, meng_balance_usd, meng_used_usd
 // 字段缺失或取不到时对应 *_ok=false，调用方显示“未配置”/“未同步”，不要当错误。
 typedef struct {
@@ -52,6 +55,13 @@ typedef struct {
     long my_tokens_total;   // 累计 token（输入+输出，不含缓存）
     long my_tokens_today;   // 今日 token（输入+输出）
     double my_cost_usd;     // 累计花费（美元，官方价估算；中转实际扣得更少）
+    // Muse 免费版每周限额（Muse 应用本身，subscription-status 命令；
+    // 不是 Claude Code 中转用量，不要和上面混淆）
+    bool muse_ok;           // false = 桥接还没同步到 muse_usage.json（显示“未同步”）
+    int  muse_weekly_pct;   // 每周限额已使用百分比，如 27
+    char muse_reset_date[16]; // 重置日期，中文，如“11月22日”
+    int  muse_extra_pct;    // 额外额度已使用百分比，如 0
+    int  muse_extra_left_b; // 额外额度剩余 token 数（单位：十亿），如 31
     // mengapi 用量（桥接读 mengapi 面板接口；未配令牌时 meng_configured=false）
     bool meng_configured;   // 桥接 config.json 里有没有 MENGAPI_TOKEN / MENGAPI_USER_ID
     bool meng_ok;           // 令牌有效且接口通
