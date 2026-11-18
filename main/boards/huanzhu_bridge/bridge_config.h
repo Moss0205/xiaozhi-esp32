@@ -1,6 +1,13 @@
 // 桥接版板端配置 —— 幻珠 HuanZhu_360_360 V01
-// ⚠️ 未编译草稿（2026-11-05）：由 MOSS 按 dsh fork + 原理图写出，dsh 用 ESP-IDF v6.1
-//    编译验证后才能刷机。原厂固件备份仍在，刷坏可回滚。
+//
+// 本文件 = a549b58（#15 时钟修复版，板上现用固件）的 bridge_config.h
+//         + 信息屏改动（2026-11-18）。只改了按键语义注释、新增 3 秒重启阈值
+//         和 /esp/info 超时；其余与 a549b58 完全一致。
+//
+// ⚠️ 注意：main 分支在 a549b58 之后已被 dsh 改过（状态栏 4 页 + beichenapi
+//    /v1/usage + wttr.in 天气，见 README 的“与 main 分支的冲突”一节）。
+//    本文件以 a549b58 为基线，不含 dsh 的改动；合入 main 前必须先解决冲突，
+//    由 chen 决定用哪套设计。
 //
 // 本文件只放「一处可改的配置表」：引脚、按键映射、桥接服务地址、行为阈值。
 // fork 里已经验证过的硬件事实（屏 188 条初始化、ADC 麦、圆屏字幕修正）不在这里
@@ -10,6 +17,7 @@
 #define _BRIDGE_CONFIG_H_
 
 #include <driver/gpio.h>
+
 #include <driver/spi_master.h>
 #include <hal/adc_types.h>
 
@@ -50,17 +58,21 @@
 #define KEY_PRESS_GPIO  GPIO_NUM_4   // 按中间（这一路 dsh 实测可靠，争议最小）
 #define KEY_DOWN_GPIO   GPIO_NUM_5   // 假设：下拨（dsh 曾称恒低，原厂行为证明三路都好用）
 
-// 最终按键语义（chen 2026-11-04 晚定稿，BRIDGE_PLAN.md 旧的「中间开关对话」段落已作废）：
+// 最终按键语义（chen 2026-11-04 晚定稿，BRIDGE_PLAN.md 旧的「中间开关对话」段落已作废；
+// 中间键语义 2026-11-18 改为信息屏切屏，见下方）：
 //   上拨短按  = 开始对话（开始录音）
 //   下拨短按  = 结束对话（停录音并上传；播放中按 = 打断播报并开始录音）
 //   上拨长按  = 音量 +10
 //   下拨长按  = 音量 -10
-//   中间短按  = 循环切屏（聊天/时钟 → 服务状态 → 天气 → AI 用量 → 回聊天）
-//   中间长按  = 按住 800ms~3s 松开：进入 WiFi 配网（换 WiFi 的入口，必须保留）
-//   中间按住 3 秒 = 重启（逃生口，到点立即重启，不等松开）
-#define KEY_LONG_PRESS_MS   800   // 上/下拨长按阈值；中键用它作为"配网候选"起点
+//   中间短按  = 循环切屏（聊天/时钟 → 我的用量 → mengapi 用量 → 天气 → 回聊天）
+//   中间长按  = 进入 WiFi 配网（0.8s 后松开；保留做 fallback，换 WiFi 时还能用）
+//   中间按住 3 秒 = 重启（逃生口，不用松开，3 秒到即重启）
+// 注意：中间长按的配网是在松开时触发（0.8s~3s 之间松开）；若一直按到 3 秒，
+// 触发的是重启，不会再进配网。上下拨长按仍是按住 0.8s 立即触发音量。
+#define KEY_LONG_PRESS_MS   800   // 按住 >=800ms 算长按，否则算短按
 #ifndef KEY_RESTART_HOLD_MS
-#define KEY_RESTART_HOLD_MS 3000  // 中键按住到这个毫秒数直接重启
+#define KEY_RESTART_HOLD_MS 3000  // 中间按住 >=3000ms = 重启（信息屏改动新增；
+// 与 main 分支 dsh 用的同名常量一致，便于合入）
 #endif
 #define KEY_DEBOUNCE_MS     20    // 消抖
 #define KEY_POLL_MS         10    // 按键轮询间隔
@@ -88,45 +100,22 @@
 #define BRIDGE_TOKEN "change-me"
 #endif
 
-// ---------------- API 用量显示（2026-11-17）----------------
-// 空闲顶栏在「时钟」与「API 用量」之间轮换显示。用量来自 Sub2API 兼容的
-// GET /v1/usage，本机实测为 api.beichenapi.com（返回 balance / usage.today /
-// usage.total）。API key 由 CI 经 bridge_token_override.h 从 secret 注入，
-// 默认空字符串 = 不拉取、顶栏只显示时钟，不带 key 编译也安全。
-#ifndef BRIDGE_USAGE_KEY
-#define BRIDGE_USAGE_KEY ""
-#endif
-#ifndef BRIDGE_USAGE_URL
-#define BRIDGE_USAGE_URL "https://api.beichenapi.com/v1/usage"
-#endif
-// 拉取间隔（分钟）：公益站响应慢，别拉太频繁；失败只打印日志，顶栏保持上次值。
-#ifndef BRIDGE_USAGE_REFRESH_MINUTES
-#define BRIDGE_USAGE_REFRESH_MINUTES 15
-#endif
-// 顶栏轮换周期（秒）：保留兼容，2026-11-18 起页面改由中键短按手动切换，此值不再使用。
-#ifndef BRIDGE_STATUS_ROTATE_SEC
-#define BRIDGE_STATUS_ROTATE_SEC 12
-#endif
-
-// ---------------- 天气显示（2026-11-17）----------------
-// 天气用 wttr.in 免 key 接口（国内可直连、HTTPS、返回 JSON）。用经纬度最准：
-// 默认江苏南通海安（32.53,120.45）—— 用户实测所在地。换地方改这两个数即可。
-#ifndef BRIDGE_WEATHER_LAT
-#define BRIDGE_WEATHER_LAT "32.53"
-#endif
-#ifndef BRIDGE_WEATHER_LON
-#define BRIDGE_WEATHER_LON "120.45"
-#endif
-#ifndef BRIDGE_WEATHER_URL
-#define BRIDGE_WEATHER_URL "https://wttr.in/" BRIDGE_WEATHER_LAT "," BRIDGE_WEATHER_LON "?format=j1"
-#endif
-
 // ---------------- 行为阈值 ----------------
 #define BRIDGE_RECORD_MAX_S    30    // 单次录音上限 30 秒（听写上限 60 秒，留余量）
 #define BRIDGE_POLL_INTERVAL_MS 1000 // 等回复时每 1 秒轮询一次 /esp/reply
 #define BRIDGE_HTTP_TIMEOUT_MS  15000 // 单次 HTTP 超时
 #define BRIDGE_VOLUME_DEFAULT  80    // 播放音量初值 0-100（软件增益，不动 codec）
 #define BRIDGE_VOLUME_STEP     10
+
+// ---------------- 信息屏（2026-11-18） ----------------
+// 板子只在切到信息屏时问桥接要一次数据（/esp/info），不轮询。
+// 桥接侧缓存：天气 45 分钟、mengapi 额度 5 分钟（见 bridge-info-endpoint.md）。
+// 板端不直接调任何外部接口，只调桥接的 /esp/info。
+// 注意：BRIDGE_INFO_HTTP_TIMEOUT_MS 目前未被 bridge_client.cc 使用——
+// a549b58 的 bridge_client.cc 用的是工程自带的 Http 抽象（CreateHttp），
+// 超时由它内部控制，没有 per-request 超时参数。本常量保留作参考，
+// 若将来换回 esp_http_client 再启用。
+#define BRIDGE_INFO_HTTP_TIMEOUT_MS 10000  // 预留：GET /esp/info 单次超时（毫秒）
 
 // ---------------- 表情 + 自动睡眠 + 字幕停留（2026-11-09） ----------------
 // 表情：bridge_app 在状态变化时调 bridge_hal_set_emotion()，名字必须与

@@ -31,23 +31,37 @@ bool bridge_poll_reply(int after_id, int* out_id,
 // 服务端音频文件还在，不会丢）。0 表示该 id 没有音频（纯文字回复）。
 int bridge_download_audio(int id, int16_t* pcm_out, size_t max_samples);
 
-// 探测桥接服务是否可达（GET /esp/reply?after=INT_MAX，只要拿到 HTTP 状态码即算在线）。
-// 用一个绝不存在的 after id，不会取走任何回复、不消耗语音队列；供"服务状态"页显示。
-bool bridge_ping(void);
+// ---------------- 信息屏（2026-11-18）：GET /esp/info ----------------
+// 板子不直接调外部接口，只问桥接要一次数据。桥接一次返回天气 + 两个 AI 用量。
+// 服务端用扁平 JSON（便于板端用下面的轻量解析，不拉 JSON 库）：
+//   天气 3 天：wx0_date/wx0_cond/wx0_high/wx0_low/wx0_hum/wx0_wind，wx1_*, wx2_*
+//   我的用量（Claude Code）：my_ok, my_tokens_total, my_tokens_today, my_cost_usd
+//   mengapi：meng_configured, meng_ok, meng_balance_usd, meng_used_usd
+// 字段缺失或取不到时对应 *_ok=false，调用方显示“未配置”/“未同步”，不要当错误。
+typedef struct {
+    // 天气（近 3 天，wx0=今天，wx1=明天，wx2=后天）
+    bool wx_ok;
+    char wx_date[3][16];    // "11-18"（月-日）
+    char wx_cond[3][16];    // "晴"/"多云"/"阴"/"毛毛雨"/"雨"/"雪"/"雾"/"雷阵雨"
+    int  wx_high[3];        // 最高温 °C
+    int  wx_low[3];         // 最低温 °C
+    int  wx_hum[3];         // 平均湿度 %
+    int  wx_wind[3];        // 最大风速 km/h
+    // 我的用量（Claude Code 经 beichenapi 中转；数据由 VM 同步脚本定期写到桥接）
+    bool my_ok;             // false = 桥接还没同步到用量文件（显示“未同步”）
+    long my_tokens_total;   // 累计 token（输入+输出，不含缓存）
+    long my_tokens_today;   // 今日 token（输入+输出）
+    double my_cost_usd;     // 累计花费（美元，官方价估算；中转实际扣得更少）
+    // mengapi 用量（桥接读 mengapi 面板接口；未配令牌时 meng_configured=false）
+    bool meng_configured;   // 桥接 config.json 里有没有 MENGAPI_TOKEN / MENGAPI_USER_ID
+    bool meng_ok;           // 令牌有效且接口通
+    double meng_balance_usd;// 剩余（美元，quota / quota_per_unit）
+    double meng_used_usd;   // 累计已用（美元）
+} bridge_info_t;
 
-// 拉取 API 用量（GET https://.../v1/usage，Sub2API 兼容协议）。
-// 成功返回 true 并填出参：
-//   balance_cents : 余额，单位「分」（USD*100 四舍五入），如 1589 = $15.89
-//   today_tokens  : 今日总 token 数
-//   today_requests: 今日请求数
-// 需要 HTTPS + Bearer key；key 来自 BRIDGE_USAGE_KEY（CI 注入，默认空不用）。
-bool bridge_fetch_usage(long* balance_cents, long* today_tokens, int* today_requests);
-
-// 拉取天气（GET https://wttr.in/<city>?format=j1，免 key）。
-// 成功返回 true 并填：
-//   temp_c      : 当前温度（摄氏度）
-//   weather_code: WMO 天气代码，交给应用层映射中文
-bool bridge_fetch_weather(int* temp_c, int* weather_code);
+// 拉取一次 /esp/info，填 out。成功返回 true；HTTP 失败/超时返回 false，
+// 调用方保留上次缓存继续显示，不要清屏。out 里 *_ok 字段由服务端如实填写。
+bool bridge_fetch_info(bridge_info_t* out);
 
 #ifdef __cplusplus
 }
