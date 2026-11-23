@@ -197,6 +197,8 @@ static void bridge_switch_screen(info_screen_t s) {
         // 回聊天：恢复时钟 + 待机表情；正文区：上条回复字幕若还在停留期内
         // （BRIDGE_SUBTITLE_HOLD_MINUTES 分钟内，或停留设为 0=一直保留），
         // 恢复字幕正文，否则回问候。
+        // 无牙仔眼睛（2026-11-23）：回聊天屏时把眼睛显示出来。
+        bridge_hal_set_eyes_visible(true);
         g_last_clock_min = -1;
         bridge_clock_refresh(true);
         TickType_t shown_ms =
@@ -212,6 +214,9 @@ static void bridge_switch_screen(info_screen_t s) {
         bridge_hal_set_emotion("sleepy");
         g_info_dirty = false;
     } else {
+        // 无牙仔眼睛（2026-11-23）：信息屏（用量/天气）上眼睛会挡住文字，
+        // 切屏时先藏起；切回聊天屏时上面那支再显示。
+        bridge_hal_set_eyes_visible(false);
         bridge_render_info_screen();
         g_info_dirty = true;  // 主任务 IDLE 分支取 /esp/info 后重渲染
     }

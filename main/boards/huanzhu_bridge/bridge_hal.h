@@ -28,6 +28,12 @@ void bridge_hal_set_emotion(const char* emotion);
 // 背光开关（PwmBacklight，GPIO8）：true=亮（100），false=灭。自动睡眠用。
 void bridge_hal_set_backlight(bool on);
 
+// 无牙仔眼睛开关（2026-11-23）：true=显示眼睛，false=藏起眼睛。
+// 信息屏（用量/天气）上眼睛会挡住文字，切屏时由 bridge_app 调它藏起；
+// 切回聊天屏时再调 true 显示。内部调 HuanzhuRoundDisplay::
+// SetToothlessEyesVisible；若绑定的 display 不是圆屏子类，则什么也不做。
+void bridge_hal_set_eyes_visible(bool visible);
+
 // 从麦克风读 samples 个 16k 样本进 buf，返回实际读到的样本数。
 // fork 的 HuanzhuAudioCodec::Read(int16_t*, int) 就是这个语义。
 int bridge_hal_mic_read(int16_t* buf, int samples);

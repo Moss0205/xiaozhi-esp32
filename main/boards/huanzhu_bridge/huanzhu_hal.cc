@@ -12,6 +12,7 @@
 #include "display/lcd_display.h"
 #include "audio_codec.h"
 #include "huanzhu_audio_codec.h"
+#include "huanzhu_display.h"
 #include "board.h"
 
 #define TAG "bridge_hal"
@@ -85,6 +86,19 @@ void bridge_hal_set_backlight(bool on) {
     }
     backlight->SetBrightness(on ? 100 : 0);
     ESP_LOGI(TAG, "backlight %s", on ? "on" : "off");
+}
+
+void bridge_hal_set_eyes_visible(bool visible) {
+    if (g_display == nullptr) {
+        ESP_LOGW(TAG, "set_eyes_visible: display not bound");
+        return;
+    }
+    // 绑定的 display 就是 board 侧创建的 HuanzhuRoundDisplay（见
+    // huanzhu_bridge_board.cc），类型由 board 保证。
+    // 注意：本工程用 -fno-rtti 编译，dynamic_cast 不可用，只能 static_cast；
+    // 若将来 board 换了 display 类型，这里要同步改。
+    auto* round = static_cast<HuanzhuRoundDisplay*>(g_display);
+    round->SetToothlessEyesVisible(visible);
 }
 
 int bridge_hal_mic_read(int16_t* buf, int samples) {
