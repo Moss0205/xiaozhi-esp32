@@ -31,17 +31,18 @@ static constexpr int kBarPad = 4;
 // 整条（含底角）都在圆内。行数越多条越往上收，底边始终钉在 312。
 static constexpr int kSubtitleBottomY = 312;
 
-// ---- 无牙仔眼睛几何（圆心 180,180，半径 180） ----
-// 两只眼中心 x=180±62，y=176；眼 92x112，顶 y=120、底 y=232，
-// 该区间圆内半宽 ≥170，眼左右边缘（x=72..288）全在圆内。
-// 顶部状态栏在 y=60..84，字幕条中心 y=300，都不与眼睛重叠。
-static constexpr int kEyeW = 92;          // 单只眼宽
-static constexpr int kEyeH = 112;         // 单只眼高（表情决定：聆听 122，开心 78）
-static constexpr int kEyeCenterY = 176;   // 眼中心 y
-static constexpr int kEyeCenterXOfs = 62; // 眼中心 x = 180 ± 62
-static constexpr int kPupilW = 22;        // 竖瞳宽（无牙仔的瞳孔是竖缝）
-static constexpr int kPupilH = 78;        // 竖瞳高
-static constexpr int kHighlightSize = 12; // 高光白点直径
+// ---- 无牙仔眼睛几何（圆心 180,180，半径 180），v2：放大 1.5 倍、上移 ----
+// 两只眼中心 x=180±80，y=174；眼 138x168，顶 y=90、底 y=258，
+// 椭圆上离圆心最远点约 149 < 180，全在内切圆内，左右边缘 x=31..329。
+// 顶部状态栏在 y=60..84（待机眼顶 y=90，留 6px；聆听眼高 178 时顶 y=85，留 1px），
+// 字幕条中心 y=300（聆听眼底 y=263，留 17px），都不与眼睛重叠。
+static constexpr int kEyeW = 138;         // 单只眼宽（v1 92 × 1.5）
+static constexpr int kEyeH = 168;         // 单只眼高（v1 112 × 1.5；表情决定：聆听 178，开心 117）
+static constexpr int kEyeCenterY = 174;   // 眼中心 y（v1 176，上移 2px；眼顶 120→90）
+static constexpr int kEyeCenterXOfs = 80; // 眼中心 x = 180 ± 80（眼变宽，间距拉开，内隙 22px）
+static constexpr int kPupilW = 33;        // 竖瞳宽（v1 22 × 1.5）
+static constexpr int kPupilH = 117;       // 竖瞳高（v1 78 × 1.5）
+static constexpr int kHighlightSize = 18; // 高光白点直径（v1 12 × 1.5）
 static constexpr uint32_t kEyeGreen = 0x7ED321;  // 无牙仔眼睛的亮绿色
 
 void HuanzhuRoundDisplay::SetupUI() {
@@ -125,13 +126,13 @@ void HuanzhuRoundDisplay::SetChatMessage(const char* role, const char* content) 
 // 而手绘只需要 LVGL 图元：绿椭圆（虹膜本身）+ 黑色竖瞳 + 白色高光，
 // 画在全屏透明层上，眨眼/游移/表情全部用 LVGL 动画和定时器做，
 // 不动上游 Display、不用改 assets、不动任何桥接逻辑。
-// 尺寸验算：眼顶 y=120（圆内半宽 174）、眼底 y=232（半宽 168），
-// 眼左右边缘 x=72..288（半宽 108），全在内切圆内，360 圆屏上无切角。
+// 尺寸验算（v2，数值验算过）：待机眼顶 y=90、眼底 y=258，椭圆离圆心最远约 149 < 180，
+// 眼左右边缘 x=31..329，全在内切圆内，360 圆屏上无切角；眼顶距状态栏 6px，眼底距字幕条 22px。
 // 表情映射（bridge_app.cc emotion_for_state 的四个名字）：
-//   sleepy   → 待机：眼高 112，瞳孔基线 +4，慢眨眼
-//   funny    → 聆听：眼高 122（睁大），瞳孔基线 -6，眨眼更快、偶尔扫视
-//   confused → 思考/等回复：眼高 112，眼珠随机游移
-//   silly    → 说话：眼高 78（开心眯眯眼），瞳孔基线 -12
+//   sleepy   → 待机：眼高 168，瞳孔基线 +6，慢眨眼
+//   funny    → 聆听：眼高 178（睁大，v1 的 +10 绝对量；×1.5 会顶到状态栏），瞳孔基线 -9，眨眼更快、偶尔扫视
+//   confused → 思考/等回复：眼高 168，眼珠随机游移
+//   silly    → 说话：眼高 117（开心眯眯眼），瞳孔基线 -18
 // 方向感：硬件只有一个模拟麦克风，没有麦克风阵列，做不了声源定位，
 // 「看向说话方向」做不到；聆听时改成偶尔的小扫视（注意力感），如实说明。
 // 注意：本文件所有 LVGL 调用都遵循上游的锁规则 ——
@@ -148,7 +149,7 @@ lv_obj_t* CreateOneEye(lv_obj_t* parent, int x_ofs, lv_obj_t** pupil_out, lv_obj
     lv_obj_align(eye, LV_ALIGN_CENTER, x_ofs, kEyeCenterY - 180);
     lv_obj_set_style_bg_color(eye, lv_color_hex(kEyeGreen), 0);
     lv_obj_set_style_bg_opa(eye, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(eye, LV_RADIUS_CIRCLE, 0);  // 92x112 → 竖椭圆
+    lv_obj_set_style_radius(eye, LV_RADIUS_CIRCLE, 0);  // 138x168 → 竖椭圆
     lv_obj_set_style_border_width(eye, 0, 0);
     lv_obj_set_style_pad_all(eye, 0, 0);
     lv_obj_set_scrollbar_mode(eye, LV_SCROLLBAR_MODE_OFF);
@@ -160,7 +161,7 @@ lv_obj_t* CreateOneEye(lv_obj_t* parent, int x_ofs, lv_obj_t** pupil_out, lv_obj
     lv_obj_align(pupil, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_bg_color(pupil, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(pupil, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(pupil, LV_RADIUS_CIRCLE, 0);  // 22x78 → 竖缝
+    lv_obj_set_style_radius(pupil, LV_RADIUS_CIRCLE, 0);  // 33x117 → 竖缝
     lv_obj_set_style_border_width(pupil, 0, 0);
     lv_obj_set_style_pad_all(pupil, 0, 0);
     lv_obj_remove_flag(pupil, LV_OBJ_FLAG_CLICKABLE);
@@ -168,7 +169,7 @@ lv_obj_t* CreateOneEye(lv_obj_t* parent, int x_ofs, lv_obj_t** pupil_out, lv_obj
 
     lv_obj_t* hl = lv_obj_create(eye);
     lv_obj_set_size(hl, kHighlightSize, kHighlightSize);
-    lv_obj_align(hl, LV_ALIGN_CENTER, -10, -24);
+    lv_obj_align(hl, LV_ALIGN_CENTER, -15, -36);
     lv_obj_set_style_bg_color(hl, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(hl, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(hl, LV_RADIUS_CIRCLE, 0);
@@ -211,7 +212,7 @@ void HuanzhuRoundDisplay::CreateToothlessEyes() {
     // 眼珠游移定时器：850ms 一次，只在思考/聆听表情下真的动瞳孔。
     look_timer_ = lv_timer_create(LookTimerCb, 850, this);
 
-    ESP_LOGI(TAG, "Toothless eyes created: 92x112 @ y=%d, green=0x%06x",
+    ESP_LOGI(TAG, "Toothless eyes v2 created: 138x168 @ y=%d, green=0x%06x",
              kEyeCenterY, (unsigned)kEyeGreen);
 }
 
@@ -274,8 +275,8 @@ void HuanzhuRoundDisplay::ApplyGaze() {
     int dy = gaze_base_dy_ + gaze_dy_;
     lv_obj_align(pupil_l_, LV_ALIGN_CENTER, dx, dy);
     lv_obj_align(pupil_r_, LV_ALIGN_CENTER, dx, dy);
-    lv_obj_align(hl_l_, LV_ALIGN_CENTER, dx - 10, dy - 24);
-    lv_obj_align(hl_r_, LV_ALIGN_CENTER, dx - 10, dy - 24);
+    lv_obj_align(hl_l_, LV_ALIGN_CENTER, dx - 15, dy - 36);
+    lv_obj_align(hl_r_, LV_ALIGN_CENTER, dx - 15, dy - 36);
 }
 
 void HuanzhuRoundDisplay::LookTimerCb(lv_timer_t* timer) {
@@ -283,13 +284,13 @@ void HuanzhuRoundDisplay::LookTimerCb(lv_timer_t* timer) {
     if (self == nullptr || !self->eyes_shown_) return;
     switch (self->expr_) {
         case ToothlessExpr::THINK: {
-            // 思考：眼珠慢慢随机游移（随机游走，限制在 ±14x/±10y 内）
-            int dx = self->gaze_dx_ + (int)(esp_random() % 17) - 8;
-            int dy = self->gaze_dy_ + (int)(esp_random() % 13) - 6;
-            if (dx > 14) dx = 14;
-            if (dx < -14) dx = -14;
-            if (dy > 10) dy = 10;
-            if (dy < -10) dy = -10;
+            // 思考：眼珠慢慢随机游移（随机游走，限制在 ±21x/±15y 内，按 1.5 倍放大）
+            int dx = self->gaze_dx_ + (int)(esp_random() % 25) - 12;
+            int dy = self->gaze_dy_ + (int)(esp_random() % 19) - 9;
+            if (dx > 21) dx = 21;
+            if (dx < -21) dx = -21;
+            if (dy > 15) dy = 15;
+            if (dy < -15) dy = -15;
             self->gaze_dx_ = dx;
             self->gaze_dy_ = dy;
             self->ApplyGaze();
@@ -299,8 +300,8 @@ void HuanzhuRoundDisplay::LookTimerCb(lv_timer_t* timer) {
             // 聆听：偶尔（约 1/3 概率）小扫视一下。
             // 单麦克风做不了声源定位，看向说话方向不成立；扫视只给注意力感。
             if ((esp_random() % 3) == 0) {
-                self->gaze_dx_ = (int)(esp_random() % 13) - 6;
-                self->gaze_dy_ = (int)(esp_random() % 7) - 3;
+                self->gaze_dx_ = (int)(esp_random() % 19) - 9;
+                self->gaze_dy_ = (int)(esp_random() % 11) - 5;
                 self->ApplyGaze();
             }
             break;
@@ -321,25 +322,25 @@ void HuanzhuRoundDisplay::ApplyExpressionLocked() {
     // 先停掉进行中的眨眼动画，避免它把高度播回旧表情的值。
     if (eye_l_ != nullptr) lv_anim_delete(eye_l_, EyeHeightAnimCb);
     if (eye_r_ != nullptr) lv_anim_delete(eye_r_, EyeHeightAnimCb);
-    int h = 112;
+    int h = 168;
     int base_dy = 0;
     switch (expr_) {
         case ToothlessExpr::LISTEN:
-            h = 122;   // 聆听：睁大
-            base_dy = -6;
+            h = 178;   // 聆听：睁大（+10，与 v1 绝对量相同；×1.5 会顶到状态栏）
+            base_dy = -9;
             break;
         case ToothlessExpr::THINK:
-            h = 112;   // 思考：正常，眼珠游移
+            h = 168;   // 思考：正常，眼珠游移
             base_dy = 0;
             break;
         case ToothlessExpr::HAPPY:
-            h = 78;    // 说话：开心眯眯眼
-            base_dy = -12;
+            h = 117;   // 说话：开心眯眯眼
+            base_dy = -18;
             break;
         case ToothlessExpr::IDLE:
         default:
-            h = 112;   // 待机：放松
-            base_dy = 4;
+            h = 168;   // 待机：放松
+            base_dy = 6;
             break;
     }
     eye_h_ = h;

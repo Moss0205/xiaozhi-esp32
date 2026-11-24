@@ -87,7 +87,7 @@ private:
     volatile ToothlessExpr expr_ = ToothlessExpr::IDLE;
     volatile bool eyes_visible_ = true;  // 用户层可见（信息屏上为 false）
     volatile bool eyes_shown_ = false;   // 眼睛层当前是否未隐藏
-    int eye_h_ = 112;                    // 当前眼高（表情决定，眨眼动画会临时改）
+    int eye_h_ = 168;                    // 当前眼高（表情决定，眨眼动画会临时改；v2 基准 168）
     int gaze_dx_ = 0;                    // 瞳孔游移 x（相对眼中心）
     int gaze_dy_ = 0;                    // 瞳孔游移 y（相对眼中心）
     int gaze_base_dy_ = 0;               // 瞳孔基线 y（表情决定）
