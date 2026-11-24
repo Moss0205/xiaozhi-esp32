@@ -46,6 +46,25 @@ static constexpr int kSubtitleBottomY = 320;
 //   拟合圆半径 455.6、圆心 (180,-163.6)，18 点折线；字幕条单行顶边 y≈296，留 4px。
 // 脸背景：360x360 纯黑矩形，压在 container_ 之上、其余控件之下，只在脸显示时出现；
 //   脸显示时状态栏/字幕文字改白色（亮色主题黑字在黑底上看不见），藏起时恢复主题色。
+// v4 根因（2026-11-24，v3 实机照片）：v1/v2/v3 三版眼睛都画在了 y≈276 而不是
+//   设计的 y=180，所以 chen 每次都说“眼睛还是在下面”。不是坐标挪得不够，也不是
+//   屏幕旋转错了——是 SetEyeHeightLocked/EyeHeightAnimCb 里那行
+//   lv_obj_set_y(eye, kEyeCenterY - h/2) 的语义错了：眼睛对象是 LV_ALIGN_CENTER
+//   对齐的，LVGL 9 的 lv_obj_refr_pos 在 CENTER 分支里把 style Y 当偏移量
+//   加到居中位置上（y += ph/2 - h/2），所以 set_y(96) 的实际效果是眼顶
+//   y=180-84+96=192、眼中心 y=276，整整低了 96 单位；每次眨眼回调又把它
+//   重新钉回 276。证据：v3 照片里时钟条/嘴线/字幕三点拟合的映射圆心在
+//   image_x≈618，眼睛却在 512；鼻孔灰点和眼睛同高（鼻子在 y=274，眼睛被
+//   拖到 276，正好重合）。v4 删掉这两行 set_y：CENTER 对齐下只改高度，
+//   中心自动保持在 180 不动，眼睛才真正落到正中心。
+//   旋转不用动：面板 MADCTL 0xC0（180°）与 LVGL rotation 180° 相互抵消，
+//   90° 偏转只是面板物理安装方向（FPC 在侧边）；chen 把时钟转到上方能读
+//   时就是正面，改 MADCTL 会把所有屏（包括信息屏和时钟文字）一起转歪。
+// v4 脸文字隐藏：脸显示时状态栏（时钟+图标）与底部字幕条都不画，只留黑底+
+//   眼睛+鼻子+嘴巴；切到用量/天气信息屏时再显示。字幕条用上游的
+//   hide_subtitle_ 开关（SetChatMessage 只有在 !hide_subtitle_ 时才取消
+//   隐藏，所以每条新消息也不会把它重新顶出来）；状态栏上游从不改可见性，
+//   直接藏/显即可。本板 config.json 没设 hide_subtitle，运行时这开关归脸管。
 static constexpr int kEyeW = 138;         // 单只眼宽（v1 92 × 1.5）
 static constexpr int kEyeH = 168;         // 单只眼高（v1 112 × 1.5；表情决定：聆听 178，开心 117）
 static constexpr int kEyeCenterY = 180;   // 眼中心 y（屏幕正中心；v2 174）
@@ -151,7 +170,7 @@ void HuanzhuRoundDisplay::SetChatMessage(const char* role, const char* content) 
 // 而手绘只需要 LVGL 图元：绿椭圆（虹膜本身）+ 黑色竖瞳 + 白色高光，
 // 画在全屏透明层上，眨眼/游移/表情全部用 LVGL 动画和定时器做，
 // 不动上游 Display、不用改 assets、不动任何桥接逻辑。
-// 尺寸验算（v3，数值验算过）：眼睛居中 y=180，待机眼顶 y=96、眼底 y=264，
+// 尺寸验算（v3，数值验算过；v4 修掉 set_y 误用后才真正成立）：眼睛居中 y=180，待机眼顶 y=96、眼底 y=264，
 // 椭圆离圆心最远约 149 < 180，眼左右边缘 x=31..329，全在内切圆内，360 圆屏上无切角；
 // 眼顶距状态栏 12px（聆听 7px），眼底距字幕条 32px。
 // 鼻子两只鼻孔 12x16，中心 (171,274)/(189,274)，离圆心最远角约 103；
@@ -317,7 +336,7 @@ void HuanzhuRoundDisplay::CreateToothlessFace() {
     // 眼珠游移定时器：850ms 一次，只在思考/聆听表情下真的动瞳孔。
     look_timer_ = lv_timer_create(LookTimerCb, 850, this);
 
-    ESP_LOGI(TAG, "Toothless face v3 created: eyes 138x168 @ y=%d, black bg, nose+mouth",
+    ESP_LOGI(TAG, "Toothless face v4 created: eyes 138x168 truly centered @ y=%d (set_y bug fixed), face text hidden",
              kEyeCenterY);
 }
 
@@ -339,7 +358,45 @@ void HuanzhuRoundDisplay::ShowEyesLocked(bool show) {
             lv_obj_add_flag(face_bg_, LV_OBJ_FLAG_HIDDEN);
         }
     }
+    // v4：脸显示时状态栏与字幕条都不画（先不做，隐藏起来），只留黑底+眼睛+
+    // 鼻子+嘴巴；信息屏上再显示。见 SetFaceTextHiddenLocked。
+    SetFaceTextHiddenLocked(show);
     SetFaceTextColorLocked(show ? lv_color_white() : theme_text_color_);
+}
+
+void HuanzhuRoundDisplay::SetFaceTextHiddenLocked(bool hidden) {
+    // 字幕条：用上游 LcdDisplay 的 hide_subtitle_ 开关（本板 config.json 没设它，
+    // 运行时归脸管）。上游 SetChatMessage 只有在 !hide_subtitle_ 时才把
+    // bottom_bar_ 取消隐藏，所以这里置位后，每条新消息也不会把字幕条重新
+    // 顶出来；切回信息屏时放开，下一条消息照常显示。
+    hide_subtitle_ = hidden;
+    if (bottom_bar_ != nullptr) {
+        if (hidden) {
+            lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
+        } else if (chat_message_label_ != nullptr &&
+                   lv_label_get_text(chat_message_label_) != nullptr &&
+                   lv_label_get_text(chat_message_label_)[0] != '\0') {
+            // 只在有正文时恢复显示（与上游 SetHideSubtitle(false) 的语义一致），
+            // 避免信息屏上出现一条空胶囊。
+            lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    // 状态栏（时钟文字在 status_bar_ 里，图标在 top_bar_ 里）：上游从不改它俩
+    // 的可见性，直接藏/显即可。
+    if (top_bar_ != nullptr) {
+        if (hidden) {
+            lv_obj_add_flag(top_bar_, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (status_bar_ != nullptr) {
+        if (hidden) {
+            lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_remove_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
 }
 
 void HuanzhuRoundDisplay::SetFaceTextColorLocked(lv_color_t color) {
@@ -351,16 +408,22 @@ void HuanzhuRoundDisplay::SetFaceTextColorLocked(lv_color_t color) {
 void HuanzhuRoundDisplay::SetEyeHeightLocked(lv_obj_t* eye, int h) {
     if (eye == nullptr) return;
     if (h < 6) h = 6;
+    // v4 根因修复：不要在这里调 lv_obj_set_y(eye, kEyeCenterY - h / 2)。
+    // 眼睛对象是 LV_ALIGN_CENTER 对齐的，LVGL 9 的 lv_obj_refr_pos 在 CENTER
+    // 分支里把 style Y 当偏移量加到居中位置上（y += ph/2 - h/2），所以那行
+    // 代码的实际效果是眼顶 y=180-h/2+(180-h/2)=360-h、眼中心 y=360-h/2
+    // （h=168 时中心 276），而不是设计的 180——这就是 v1/v2/v3 眼睛一直
+    // “在下面”的原因。只改高度即可：CENTER 对齐下改高度时中心自动不动。
     lv_obj_set_height(eye, h);
-    lv_obj_set_y(eye, kEyeCenterY - h / 2);  // 改高时保持眼中心 y 不动
 }
 
 void HuanzhuRoundDisplay::EyeHeightAnimCb(void* var, int32_t h) {
     auto* eye = static_cast<lv_obj_t*>(var);
     if (eye == nullptr) return;
     if (h < 6) h = 6;
+    // v4：与 SetEyeHeightLocked 同理，只改高度不调 set_y（CENTER 对齐下改高度
+    // 时中心自动保持在 180；调 set_y 会把眼睛拖到 y=360-h/2，见上）。
     lv_obj_set_height(eye, h);
-    lv_obj_set_y(eye, kEyeCenterY - h / 2);
 }
 
 void HuanzhuRoundDisplay::DoBlink() {

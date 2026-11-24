@@ -24,9 +24,18 @@
 // 绿眼睛（竖瞳）：待机 sleepy、聆听 funny、思考 confused、说话 silly。
 // v3：眼睛移到屏幕正中间（眼中心 y=180）、脸背景纯黑、再加鼻子（两只小鼻孔）
 // 和嘴巴（宽而浅的微笑弧线），照着玩偶的脸画。
+// v4（2026-11-24）：修了 v1–v3 眼睛一直“在下面”的根因——SetEyeHeightLocked /
+// EyeHeightAnimCb 里 lv_obj_set_y(eye, kEyeCenterY - h/2) 的语义错了：眼睛是
+// LV_ALIGN_CENTER 对齐的，LVGL 9 会把 style Y 当偏移量加到居中位置上，实际
+// 眼中心落到了 y=276 而不是 180。v4 删掉这两行 set_y，只改高度，中心自动
+// 保持在 180，眼睛才真正居中。旋转没动：面板 MADCTL 180° 与 LVGL rotation
+// 180° 相互抵消，90° 偏转只是面板物理安装方向，时钟转到上方能读时就是正面。
+// v4 脸显示时状态栏（时钟+图标）与底部字幕条都不画（先不做，隐藏起来），只留
+// 黑底+眼睛+鼻子+嘴巴；切到信息屏时文字照常显示。
 // 眼睛/鼻子/嘴巴用 LVGL 图元画，不用 GIF 素材，所以不用改 assets 分区；
 // 眨眼和眼珠转动由两个 lv_timer 驱动。脸背景与文字颜色跟眼睛同进退：
 // 脸显示时背景纯黑、状态栏/字幕文字改白色；切到信息屏藏起眼睛时恢复主题配色。
+// v4：脸显示时状态栏与字幕条直接隐藏（先不做），信息屏上再显示。
 // 其他表情名（以及任何不在映射表里的名字）回退给上游 SetEmotion()
 // （GIF/字体表情），行为与原来一致。
 // 信息屏（用量/天气）上眼睛会挡住文字：bridge_app 切屏时通过
@@ -70,8 +79,9 @@ private:
     void CreateToothlessFace();      // SetupUI 后建脸层（幂等）：黑背景 + 眼睛 + 鼻子 + 嘴巴
     void ShowEyesLocked(bool show);  // 显示/隐藏脸层（调用者持锁）
     void SetFaceTextColorLocked(lv_color_t color);  // 脸显示时文字改白、藏起时恢复主题色（调用者持锁）
+    void SetFaceTextHiddenLocked(bool hidden);  // v4：脸显示时藏起状态栏与字幕条、信息屏上再显示（调用者持锁）
     void ApplyExpressionLocked();    // 按当前表情设眼高/瞳孔基线（调用者持锁）
-    void SetEyeHeightLocked(lv_obj_t* eye, int h);  // 设单只眼高度并保持中心不动
+    void SetEyeHeightLocked(lv_obj_t* eye, int h);  // 设单只眼高度；CENTER 对齐下改高度时中心自动不动（v4：不要调 set_y，见 .cc）
     void ApplyGaze();                // 按 gaze_dx_/gaze_dy_ 重摆瞳孔与高光（LVGL 任务内调用，不拿锁）
     void DoBlink();                  // 触发一次眨眼动画（LVGL 任务内调用，不拿锁）
 
