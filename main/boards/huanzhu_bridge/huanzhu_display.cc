@@ -7,6 +7,7 @@
 #include <esp_log.h>
 #include <esp_random.h>
 
+#include <cmath>
 #include <cstring>
 
 #define TAG "huanzhu_display"
@@ -19,38 +20,62 @@
 static constexpr int kTopBarOffsetY = 60;     // 向下移 60px（TOP_MID 正方向是下）
 static constexpr int kTopBarWidth = 300;      // 图标条宽度（原 360 两端出圆）
 
-// 底部字幕条：条中心放圆心下方 120px（y=300）：
+// 底部字幕条（v1/v2 旧几何）：条中心放圆心下方 120px（y=300）：
 //   圆内半宽 = sqrt(180^2 - 120^2) ≈ 134 → 可见 ~268px
 //   条底边 y≈312（半宽 ≈122 → 可见 ~244px）
 // 所以条宽取 240px 时整条（含底角）都在圆内。
 // 表情图 64x61 居中（y≈149..210），与字幕条不重叠。
-static constexpr int kBarWidth = 240;
+// v3：字幕条下移、收窄，为嘴巴腾地方（见下方无牙仔脸几何）：
+//   条宽 220、底边 y=320：最差点 (76,318) 离圆心 ≈172.8 < 180，整条在圆内；
+//   单行条顶边 y≈296，嘴巴底边 y=292，留 4px；多行时条往上长，
+//   脸层在字幕条之上，鼻子嘴巴仍盖在条上面，不会被字幕遮住。
+static constexpr int kBarWidth = 220;
 static constexpr int kBarOffsetY = 120;
 static constexpr int kBarPad = 4;
-// 多行字幕底边安全线：条宽 240px 时，底边 y=312 处圆内半宽 ≈122 → 可见 ~244px，
-// 整条（含底角）都在圆内。行数越多条越往上收，底边始终钉在 312。
-static constexpr int kSubtitleBottomY = 312;
+// 多行字幕底边安全线：条宽 220px 时，底边 y=320 处圆内半宽 ≈113 → 可见 ~226px，
+// 整条（含底角）都在圆内。行数越多条越往上收，底边始终钉在 320。
+static constexpr int kSubtitleBottomY = 320;
 
-// ---- 无牙仔眼睛几何（圆心 180,180，半径 180），v2：放大 1.5 倍、上移 ----
-// 两只眼中心 x=180±80，y=174；眼 138x168，顶 y=90、底 y=258，
+// ---- 无牙仔脸几何（圆心 180,180，半径 180），v3：眼睛居中、黑背景、鼻子嘴巴 ----
+// 眼睛：两只眼中心 x=180±80，y=180（屏幕正中心）；眼 138x168，顶 y=96、底 y=264，
 // 椭圆上离圆心最远点约 149 < 180，全在内切圆内，左右边缘 x=31..329。
-// 顶部状态栏在 y=60..84（待机眼顶 y=90，留 6px；聆听眼高 178 时顶 y=85，留 1px），
-// 字幕条中心 y=300（聆听眼底 y=263，留 17px），都不与眼睛重叠。
+// 顶部状态栏在 y=60..84（待机眼顶 y=96，留 12px；聆听眼高 178 时顶 y=91，留 7px），
+// 字幕条中心 y=308（待机眼底 y=264，留 32px），都不与眼睛重叠。
+// 鼻子：两只小鼻孔 12x16，中心 (171,274)/(189,274)，眼底之下、嘴巴之上，离圆心最远角约 103。
+// 嘴巴：宽而浅的微笑弧线，端点 (95,284)/(265,284)、最低点 (180,292)，
+//   拟合圆半径 455.6、圆心 (180,-163.6)，18 点折线；字幕条单行顶边 y≈296，留 4px。
+// 脸背景：360x360 纯黑矩形，压在 container_ 之上、其余控件之下，只在脸显示时出现；
+//   脸显示时状态栏/字幕文字改白色（亮色主题黑字在黑底上看不见），藏起时恢复主题色。
 static constexpr int kEyeW = 138;         // 单只眼宽（v1 92 × 1.5）
 static constexpr int kEyeH = 168;         // 单只眼高（v1 112 × 1.5；表情决定：聆听 178，开心 117）
-static constexpr int kEyeCenterY = 174;   // 眼中心 y（v1 176，上移 2px；眼顶 120→90）
+static constexpr int kEyeCenterY = 180;   // 眼中心 y（屏幕正中心；v2 174）
 static constexpr int kEyeCenterXOfs = 80; // 眼中心 x = 180 ± 80（眼变宽，间距拉开，内隙 22px）
 static constexpr int kPupilW = 33;        // 竖瞳宽（v1 22 × 1.5）
 static constexpr int kPupilH = 117;       // 竖瞳高（v1 78 × 1.5）
 static constexpr int kHighlightSize = 18; // 高光白点直径（v1 12 × 1.5）
 static constexpr uint32_t kEyeGreen = 0x7ED321;  // 无牙仔眼睛的亮绿色
+static constexpr int kNoseW = 12;         // 单只鼻孔宽
+static constexpr int kNoseH = 16;         // 单只鼻孔高
+static constexpr int kNoseCenterY = 274;  // 鼻孔中心 y（眼底 264 之下、嘴巴之上）
+static constexpr int kNoseCenterXOfs = 9; // 鼻孔中心 x = 180 ± 9
+static constexpr uint32_t kFaceGray = 0x808080;  // 鼻子/嘴巴的灰色（黑底上看得见的深灰）
+static constexpr int kMouthPointCount = 18;      // 嘴巴弧线点数（x=95..265，步长 10）
+static constexpr double kMouthCircleR = 455.6;   // 嘴巴拟合圆半径
+static constexpr double kMouthCircleCy = -163.6; // 嘴巴拟合圆圆心 y
+static constexpr int kMouthLineWidth = 3;        // 嘴巴线宽
 
 void HuanzhuRoundDisplay::SetupUI() {
     SpiLcdDisplay::SetupUI();
 
+    // 主题文字色（亮色主题黑字 / 深色主题白字）：脸显示时文字改白，藏起时恢复。
+    lv_obj_t* screen = lv_screen_active();
+    if (screen != nullptr) {
+        theme_text_color_ = lv_obj_get_style_text_color(screen, LV_PART_MAIN);
+    }
+
     FitSubtitleToCircle();
     FitTopBarToCircle();
-    CreateToothlessEyes();
+    CreateToothlessFace();
 }
 
 void HuanzhuRoundDisplay::FitTopBarToCircle() {
@@ -105,7 +130,7 @@ void HuanzhuRoundDisplay::SetChatMessage(const char* role, const char* content) 
     // 上游 MULTILINE 分支每次都会把 bottom_bar_ 重新钉回方形帧缓冲底边，
     // 正好抵消圆屏校正，所以先调上游设文字，再重新收进圆内。
     SpiLcdDisplay::SetChatMessage(role, content);
-    FitSubtitleToCircle();  // 宽 240 + 居中（内部拿锁）
+    FitSubtitleToCircle();  // 宽 220 + 居中（内部拿锁）
     // 多行时条变高：按实测高度把底边收到 kSubtitleBottomY，避免底角出圆被切。
     // 中心 y = 180 + offset；一行时 offset=120（与 FitSubtitleToCircle 一致）。
     DisplayLockGuard lock(this);
@@ -119,20 +144,28 @@ void HuanzhuRoundDisplay::SetChatMessage(const char* role, const char* content) 
 }
 
 // ---------------------------------------------------------------------------
-// 无牙仔眼睛（LVGL 手绘，2026-11-23）
+// 无牙仔脸（LVGL 手绘，2026-11-23 v1，2026-11-24 v2/v3）
 // ---------------------------------------------------------------------------
 // 为什么不用 GIF：上游表情是 5 张 64x61 的小 GIF（delicious/silly/funny/
 // sleepy/confused），要换成无牙仔眼睛就得重做 assets 分区里的 GIF 包；
 // 而手绘只需要 LVGL 图元：绿椭圆（虹膜本身）+ 黑色竖瞳 + 白色高光，
 // 画在全屏透明层上，眨眼/游移/表情全部用 LVGL 动画和定时器做，
 // 不动上游 Display、不用改 assets、不动任何桥接逻辑。
-// 尺寸验算（v2，数值验算过）：待机眼顶 y=90、眼底 y=258，椭圆离圆心最远约 149 < 180，
-// 眼左右边缘 x=31..329，全在内切圆内，360 圆屏上无切角；眼顶距状态栏 6px，眼底距字幕条 22px。
+// 尺寸验算（v3，数值验算过）：眼睛居中 y=180，待机眼顶 y=96、眼底 y=264，
+// 椭圆离圆心最远约 149 < 180，眼左右边缘 x=31..329，全在内切圆内，360 圆屏上无切角；
+// 眼顶距状态栏 12px（聆听 7px），眼底距字幕条 32px。
+// 鼻子两只鼻孔 12x16，中心 (171,274)/(189,274)，离圆心最远角约 103；
+// 嘴巴宽 170 的浅弧线，端点 y=284、最低点 y=292，字幕条单行顶边 y≈296，留 4px。
+// v3 脸背景：360x360 纯黑矩形，压在 container_ 之上、其余控件之下，
+//   只在脸显示时出现（信息屏上藏起，恢复主题底色）；脸显示时状态栏/
+//   字幕文字改白色（亮色主题黑字在黑底上看不见），藏起时恢复主题色。
+//   这样整张脸跟玩偶的黑毛融为一体，信息屏配色一点不动。
 // 表情映射（bridge_app.cc emotion_for_state 的四个名字）：
 //   sleepy   → 待机：眼高 168，瞳孔基线 +6，慢眨眼
 //   funny    → 聆听：眼高 178（睁大，v1 的 +10 绝对量；×1.5 会顶到状态栏），瞳孔基线 -9，眨眼更快、偶尔扫视
 //   confused → 思考/等回复：眼高 168，眼珠随机游移
 //   silly    → 说话：眼高 117（开心眯眯眼），瞳孔基线 -18
+// 鼻子和嘴巴在各表情下保持不动（只眼睛动），简单可靠。
 // 方向感：硬件只有一个模拟麦克风，没有麦克风阵列，做不了声源定位，
 // 「看向说话方向」做不到；聆听时改成偶尔的小扫视（注意力感），如实说明。
 // 注意：本文件所有 LVGL 调用都遵循上游的锁规则 ——
@@ -183,12 +216,81 @@ lv_obj_t* CreateOneEye(lv_obj_t* parent, int x_ofs, lv_obj_t** pupil_out, lv_obj
     return eye;
 }
 
+// 建一只鼻孔：小灰椭圆。鼻孔是眼睛层的子对象，跟眼睛一起显示/藏起。
+lv_obj_t* CreateOneNostril(lv_obj_t* parent, int x_ofs) {
+    lv_obj_t* nose = lv_obj_create(parent);
+    lv_obj_set_size(nose, kNoseW, kNoseH);
+    lv_obj_align(nose, LV_ALIGN_CENTER, x_ofs, kNoseCenterY - 180);
+    lv_obj_set_style_bg_color(nose, lv_color_hex(kFaceGray), 0);
+    lv_obj_set_style_bg_opa(nose, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(nose, LV_RADIUS_CIRCLE, 0);  // 12x16 → 小竖椭圆
+    lv_obj_set_style_border_width(nose, 0, 0);
+    lv_obj_set_style_pad_all(nose, 0, 0);
+    lv_obj_remove_flag(nose, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(nose, LV_OBJ_FLAG_SCROLLABLE);
+    return nose;
+}
+
+// 建嘴巴：宽而浅的微笑弧线，18 点折线拟合圆心 (180,-163.6)、半径 455.6 的圆，
+// 端点 (95,284)/(265,284)、最低点 (180,292)。点坐标相对线对象左上角 (93,284)。
+lv_obj_t* CreateMouth(lv_obj_t* parent) {
+    lv_obj_t* mouth = lv_line_create(parent);
+    lv_obj_set_size(mouth, 174, 12);
+    lv_obj_align(mouth, LV_ALIGN_CENTER, 0, 110);  // 对象中心 (180,290)，左上 (93,284)
+    lv_point_precise_t pts[kMouthPointCount];
+    for (int i = 0; i < kMouthPointCount; i++) {
+        double xa = 95.0 + i * 10.0;
+        double ya = kMouthCircleCy + std::sqrt(kMouthCircleR * kMouthCircleR - (xa - 180.0) * (xa - 180.0));
+        pts[i].x = (lv_value_precise_t)llround(xa - 93.0);
+        pts[i].y = (lv_value_precise_t)llround(ya - 284.0);
+    }
+    lv_line_set_points(mouth, pts, kMouthPointCount);
+    lv_obj_set_style_line_color(mouth, lv_color_hex(kFaceGray), 0);
+    lv_obj_set_style_line_width(mouth, kMouthLineWidth, 0);
+    lv_obj_set_style_line_rounded(mouth, true, 0);
+    lv_obj_set_style_bg_opa(mouth, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(mouth, 0, 0);
+    lv_obj_set_style_pad_all(mouth, 0, 0);
+    lv_obj_remove_flag(mouth, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(mouth, LV_OBJ_FLAG_SCROLLABLE);
+    return mouth;
+}
+
+// 递归改一棵子树里所有 label 的文字色（状态栏/字幕的 label 是上游 SetupUI 的
+// 局部变量，子类拿不到指针，只能从 top_bar_/status_bar_/bottom_bar_ 往下找）。
+void SetLabelsTextColorRecursive(lv_obj_t* obj, lv_color_t color) {
+    if (obj == nullptr) return;
+    if (lv_obj_check_type(obj, &lv_label_class)) {
+        lv_obj_set_style_text_color(obj, color, 0);
+    }
+    uint32_t n = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < n; i++) {
+        SetLabelsTextColorRecursive(lv_obj_get_child(obj, i), color);
+    }
+}
+
 }  // namespace
 
-void HuanzhuRoundDisplay::CreateToothlessEyes() {
+void HuanzhuRoundDisplay::CreateToothlessFace() {
     if (eyes_layer_ != nullptr) return;  // 幂等：SetupUI 只调一次，防重复
     lv_obj_t* screen = lv_screen_active();
     if (screen == nullptr) return;
+
+    // 脸背景：360x360 纯黑，压到 container_ 之上（index 1）、其余控件之下，
+    // 只在脸显示时出现；信息屏上藏起，恢复主题底色。
+    face_bg_ = lv_obj_create(screen);
+    lv_obj_set_size(face_bg_, 360, 360);
+    lv_obj_center(face_bg_);
+    lv_obj_set_style_bg_color(face_bg_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(face_bg_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(face_bg_, 0, 0);
+    lv_obj_set_style_pad_all(face_bg_, 0, 0);
+    lv_obj_set_style_radius(face_bg_, 0, 0);
+    lv_obj_set_scrollbar_mode(face_bg_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_remove_flag(face_bg_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(face_bg_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_move_to_index(face_bg_, 1);
+    lv_obj_add_flag(face_bg_, LV_OBJ_FLAG_HIDDEN);
 
     eyes_layer_ = lv_obj_create(screen);
     lv_obj_set_size(eyes_layer_, 360, 360);
@@ -206,14 +308,17 @@ void HuanzhuRoundDisplay::CreateToothlessEyes() {
 
     eye_l_ = CreateOneEye(eyes_layer_, -kEyeCenterXOfs, &pupil_l_, &hl_l_);
     eye_r_ = CreateOneEye(eyes_layer_, kEyeCenterXOfs, &pupil_r_, &hl_r_);
+    nose_l_ = CreateOneNostril(eyes_layer_, -kNoseCenterXOfs);
+    nose_r_ = CreateOneNostril(eyes_layer_, kNoseCenterXOfs);
+    mouth_ = CreateMouth(eyes_layer_);
 
     // 眨眼定时器：首次 3s 后眨，之后每次回调里随机化下一次间隔。
     blink_timer_ = lv_timer_create(BlinkTimerCb, 3000, this);
     // 眼珠游移定时器：850ms 一次，只在思考/聆听表情下真的动瞳孔。
     look_timer_ = lv_timer_create(LookTimerCb, 850, this);
 
-    ESP_LOGI(TAG, "Toothless eyes v2 created: 138x168 @ y=%d, green=0x%06x",
-             kEyeCenterY, (unsigned)kEyeGreen);
+    ESP_LOGI(TAG, "Toothless face v3 created: eyes 138x168 @ y=%d, black bg, nose+mouth",
+             kEyeCenterY);
 }
 
 void HuanzhuRoundDisplay::ShowEyesLocked(bool show) {
@@ -225,6 +330,22 @@ void HuanzhuRoundDisplay::ShowEyesLocked(bool show) {
         lv_obj_add_flag(eyes_layer_, LV_OBJ_FLAG_HIDDEN);
         eyes_shown_ = false;
     }
+    // 脸背景与文字颜色跟眼睛同进退：脸显示时背景纯黑、状态栏/字幕文字改白色；
+    // 信息屏上藏起眼睛时恢复主题底色与文字色，信息屏配色不动。
+    if (face_bg_ != nullptr) {
+        if (show) {
+            lv_obj_remove_flag(face_bg_, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(face_bg_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    SetFaceTextColorLocked(show ? lv_color_white() : theme_text_color_);
+}
+
+void HuanzhuRoundDisplay::SetFaceTextColorLocked(lv_color_t color) {
+    SetLabelsTextColorRecursive(top_bar_, color);
+    SetLabelsTextColorRecursive(status_bar_, color);
+    SetLabelsTextColorRecursive(bottom_bar_, color);
 }
 
 void HuanzhuRoundDisplay::SetEyeHeightLocked(lv_obj_t* eye, int h) {

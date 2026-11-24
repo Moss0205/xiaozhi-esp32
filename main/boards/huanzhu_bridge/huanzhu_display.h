@@ -17,13 +17,16 @@
 // 字幕换行一次全显示。注意上游 SetChatMessage() 在 MULTILINE 分支里每次
 // 消息都会把条重新钉回底边（lcd_display.cc:1143-1149），正好抵消本文件
 // 的几何校正，所以本类 override 了 SetChatMessage()：调完上游先收回圆内，
-// 再按实测高度把底边收到 y=312，避免多行时底角出圆被切。
+// 再按实测高度把底边收到 y=320，避免多行时底角出圆被切。
 //
-// 无牙仔眼睛（2026-11-23）：板子要塞进无牙仔毛绒玩偶里，圆屏当它的脸。
+// 无牙仔脸（2026-11-23 v1，2026-11-24 v2/v3）：板子要塞进无牙仔毛绒玩偶里，圆屏当它的脸。
 // 本类 override SetEmotion()，把桥接应用的四个表情名映射成一双 LVGL 手绘的
 // 绿眼睛（竖瞳）：待机 sleepy、聆听 funny、思考 confused、说话 silly。
-// 眼睛用 LVGL 图元画（绿椭圆 + 黑色竖瞳 + 白色高光），不用 GIF 素材，
-// 所以不用改 assets 分区；眨眼和眼珠转动由两个 lv_timer 驱动。
+// v3：眼睛移到屏幕正中间（眼中心 y=180）、脸背景纯黑、再加鼻子（两只小鼻孔）
+// 和嘴巴（宽而浅的微笑弧线），照着玩偶的脸画。
+// 眼睛/鼻子/嘴巴用 LVGL 图元画，不用 GIF 素材，所以不用改 assets 分区；
+// 眨眼和眼珠转动由两个 lv_timer 驱动。脸背景与文字颜色跟眼睛同进退：
+// 脸显示时背景纯黑、状态栏/字幕文字改白色；切到信息屏藏起眼睛时恢复主题配色。
 // 其他表情名（以及任何不在映射表里的名字）回退给上游 SetEmotion()
 // （GIF/字体表情），行为与原来一致。
 // 信息屏（用量/天气）上眼睛会挡住文字：bridge_app 切屏时通过
@@ -64,8 +67,9 @@ private:
         HAPPY,     // silly：说话，开心眯眯眼
     };
 
-    void CreateToothlessEyes();      // SetupUI 后建眼睛层（幂等）
-    void ShowEyesLocked(bool show);  // 显示/隐藏眼睛层（调用者持锁）
+    void CreateToothlessFace();      // SetupUI 后建脸层（幂等）：黑背景 + 眼睛 + 鼻子 + 嘴巴
+    void ShowEyesLocked(bool show);  // 显示/隐藏脸层（调用者持锁）
+    void SetFaceTextColorLocked(lv_color_t color);  // 脸显示时文字改白、藏起时恢复主题色（调用者持锁）
     void ApplyExpressionLocked();    // 按当前表情设眼高/瞳孔基线（调用者持锁）
     void SetEyeHeightLocked(lv_obj_t* eye, int h);  // 设单只眼高度并保持中心不动
     void ApplyGaze();                // 按 gaze_dx_/gaze_dy_ 重摆瞳孔与高光（LVGL 任务内调用，不拿锁）
@@ -75,19 +79,24 @@ private:
     static void LookTimerCb(lv_timer_t* timer);
     static void EyeHeightAnimCb(void* var, int32_t h);
 
-    lv_obj_t* eyes_layer_ = nullptr;  // 全屏透明层，装两只眼
+    lv_obj_t* face_bg_ = nullptr;    // 脸背景：360x360 纯黑，压在 container_ 之上、其余控件之下
+    lv_obj_t* eyes_layer_ = nullptr;  // 全屏透明层，装两只眼 + 鼻子 + 嘴巴
     lv_obj_t* eye_l_ = nullptr;       // 左眼容器（绿椭圆本身）
     lv_obj_t* eye_r_ = nullptr;       // 右眼容器
     lv_obj_t* pupil_l_ = nullptr;     // 左竖瞳（黑椭圆）
     lv_obj_t* pupil_r_ = nullptr;     // 右竖瞳
     lv_obj_t* hl_l_ = nullptr;        // 左高光（白点）
     lv_obj_t* hl_r_ = nullptr;        // 右高光
+    lv_obj_t* nose_l_ = nullptr;      // 左鼻孔（小灰椭圆）
+    lv_obj_t* nose_r_ = nullptr;      // 右鼻孔
+    lv_obj_t* mouth_ = nullptr;       // 嘴巴（宽而浅的微笑弧线，lv_line）
+    lv_color_t theme_text_color_ = lv_color_black();  // 主题文字色（SetupUI 时从屏幕样式取）
     lv_timer_t* blink_timer_ = nullptr;  // 眨眼定时器
     lv_timer_t* look_timer_ = nullptr;   // 眼珠游移定时器
     volatile ToothlessExpr expr_ = ToothlessExpr::IDLE;
     volatile bool eyes_visible_ = true;  // 用户层可见（信息屏上为 false）
     volatile bool eyes_shown_ = false;   // 眼睛层当前是否未隐藏
-    int eye_h_ = 168;                    // 当前眼高（表情决定，眨眼动画会临时改；v2 基准 168）
+    int eye_h_ = 168;                    // 当前眼高（表情决定，眨眼动画会临时改；v3 基准 168）
     int gaze_dx_ = 0;                    // 瞳孔游移 x（相对眼中心）
     int gaze_dy_ = 0;                    // 瞳孔游移 y（相对眼中心）
     int gaze_base_dy_ = 0;               // 瞳孔基线 y（表情决定）
