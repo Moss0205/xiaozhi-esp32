@@ -36,14 +36,18 @@ static constexpr int kBarPad = 4;
 // 整条（含底角）都在圆内。行数越多条越往上收，底边始终钉在 320。
 static constexpr int kSubtitleBottomY = 320;
 
-// ---- 无牙仔脸几何（圆心 180,180，半径 180），v3：眼睛居中、黑背景、鼻子嘴巴 ----
-// 眼睛：两只眼中心 x=180±80，y=180（屏幕正中心）；眼 138x168，顶 y=96、底 y=264，
-// 椭圆上离圆心最远点约 149 < 180，全在内切圆内，左右边缘 x=31..329。
+// ---- 无牙仔脸几何（圆心 180,180，半径 180），v5：眼睛再往两边分、鼻子嘴巴按原版重画 ----
+// 眼睛：两只眼中心 x=180±95，y=180（屏幕正中心，chen 说 v4 这个上下位置可以）；
+//   眼 138x168，顶 y=96、底 y=264，椭圆上离圆心最远点 164.0 < 180（数值验算过，
+//   待机/聆听/说话三个眼高都一样，最远点在眼外侧中部 x=16/344 处），全在内切圆内，
+//   两眼内隙 52px。偏移从 ±80 加到 ±95 不用收小，±95 就是上限附近。
 // 顶部状态栏在 y=60..84（待机眼顶 y=96，留 12px；聆听眼高 178 时顶 y=91，留 7px），
 // 字幕条中心 y=308（待机眼底 y=264，留 32px），都不与眼睛重叠。
-// 鼻子：两只小鼻孔 12x16，中心 (171,274)/(189,274)，眼底之下、嘴巴之上，离圆心最远角约 103。
-// 嘴巴：宽而浅的微笑弧线，端点 (95,284)/(265,284)、最低点 (180,292)，
-//   拟合圆半径 455.6、圆心 (180,-163.6)，18 点折线；字幕条单行顶边 y≈296，留 4px。
+// 鼻子（v5 按原版玩偶重画）：两只小短竖缝 5x15 胶囊形，中心 (168,276)/(192,276)，
+//   眼底之下、嘴巴之上，离圆心最远角约 104.5；原版是两个小竖缝，不是圆点。
+// 嘴巴（v5 按原版玩偶重画）：一条细长、微微弯曲的线，端点 (80,302)/(280,302)、
+//   最低点 (180,308)，宽 200、线宽 2、弧垂 6，拟合圆半径 836.3、圆心 (180,-528.3)，
+//   21 点折线；离圆心最远 157.7 < 180。脸显示时字幕条是隐藏的，不挡嘴巴。
 // 脸背景：360x360 纯黑矩形，压在 container_ 之上、其余控件之下，只在脸显示时出现；
 //   脸显示时状态栏/字幕文字改白色（亮色主题黑字在黑底上看不见），藏起时恢复主题色。
 // v4 根因（2026-11-24，v3 实机照片）：v1/v2/v3 三版眼睛都画在了 y≈276 而不是
@@ -68,20 +72,20 @@ static constexpr int kSubtitleBottomY = 320;
 static constexpr int kEyeW = 138;         // 单只眼宽（v1 92 × 1.5）
 static constexpr int kEyeH = 168;         // 单只眼高（v1 112 × 1.5；表情决定：聆听 178，开心 117）
 static constexpr int kEyeCenterY = 180;   // 眼中心 y（屏幕正中心；v2 174）
-static constexpr int kEyeCenterXOfs = 80; // 眼中心 x = 180 ± 80（眼变宽，间距拉开，内隙 22px）
+static constexpr int kEyeCenterXOfs = 95; // 眼中心 x = 180 ± 95（v5：chen 说 v4 位置可以，再往两边分；内隙 52px）
 static constexpr int kPupilW = 33;        // 竖瞳宽（v1 22 × 1.5）
 static constexpr int kPupilH = 117;       // 竖瞳高（v1 78 × 1.5）
 static constexpr int kHighlightSize = 18; // 高光白点直径（v1 12 × 1.5）
 static constexpr uint32_t kEyeGreen = 0x7ED321;  // 无牙仔眼睛的亮绿色
-static constexpr int kNoseW = 12;         // 单只鼻孔宽
-static constexpr int kNoseH = 16;         // 单只鼻孔高
-static constexpr int kNoseCenterY = 274;  // 鼻孔中心 y（眼底 264 之下、嘴巴之上）
-static constexpr int kNoseCenterXOfs = 9; // 鼻孔中心 x = 180 ± 9
+static constexpr int kNoseW = 5;          // 单只鼻孔宽（v5：原版是小短竖缝，不是圆点）
+static constexpr int kNoseH = 15;         // 单只鼻孔高
+static constexpr int kNoseCenterY = 276;  // 鼻孔中心 y（眼底 264 之下、嘴巴之上）
+static constexpr int kNoseCenterXOfs = 12; // 鼻孔中心 x = 180 ± 12
 static constexpr uint32_t kFaceGray = 0x808080;  // 鼻子/嘴巴的灰色（黑底上看得见的深灰）
-static constexpr int kMouthPointCount = 18;      // 嘴巴弧线点数（x=95..265，步长 10）
-static constexpr double kMouthCircleR = 455.6;   // 嘴巴拟合圆半径
-static constexpr double kMouthCircleCy = -163.6; // 嘴巴拟合圆圆心 y
-static constexpr int kMouthLineWidth = 3;        // 嘴巴线宽
+static constexpr int kMouthPointCount = 21;      // 嘴巴折线点数（x=80..280，步长 10）
+static constexpr double kMouthCircleR = 836.3;   // 嘴巴拟合圆半径（v5：细长微弯，弧垂 6）
+static constexpr double kMouthCircleCy = -528.3; // 嘴巴拟合圆圆心 y
+static constexpr int kMouthLineWidth = 2;        // 嘴巴线宽（v5：细线，别抢眼睛）
 
 void HuanzhuRoundDisplay::SetupUI() {
     SpiLcdDisplay::SetupUI();
@@ -170,11 +174,11 @@ void HuanzhuRoundDisplay::SetChatMessage(const char* role, const char* content) 
 // 而手绘只需要 LVGL 图元：绿椭圆（虹膜本身）+ 黑色竖瞳 + 白色高光，
 // 画在全屏透明层上，眨眼/游移/表情全部用 LVGL 动画和定时器做，
 // 不动上游 Display、不用改 assets、不动任何桥接逻辑。
-// 尺寸验算（v3，数值验算过；v4 修掉 set_y 误用后才真正成立）：眼睛居中 y=180，待机眼顶 y=96、眼底 y=264，
-// 椭圆离圆心最远约 149 < 180，眼左右边缘 x=31..329，全在内切圆内，360 圆屏上无切角；
-// 眼顶距状态栏 12px（聆听 7px），眼底距字幕条 32px。
-// 鼻子两只鼻孔 12x16，中心 (171,274)/(189,274)，离圆心最远角约 103；
-// 嘴巴宽 170 的浅弧线，端点 y=284、最低点 y=292，字幕条单行顶边 y≈296，留 4px。
+// 尺寸验算（v5，数值验算过；v4 修掉 set_y 误用后眼睛才真正居中）：眼睛居中 y=180，待机眼顶 y=96、眼底 y=264，
+// 椭圆离圆心最远 164.0 < 180（眼心 x=180±95，三个表情眼高都一样），眼左右边缘 x=16..344，
+// 全在内切圆内，360 圆屏上无切角；眼顶距状态栏 12px（聆听 7px），眼底距字幕条 32px。
+// 鼻子两只竖缝 5x15，中心 (168,276)/(192,276)，离圆心最远角约 104.5；
+// 嘴巴细长微弯的线，宽 200、线宽 2、弧垂 6，端点 y=302、最低点 y=308，离圆心最远 157.7。
 // v3 脸背景：360x360 纯黑矩形，压在 container_ 之上、其余控件之下，
 //   只在脸显示时出现（信息屏上藏起，恢复主题底色）；脸显示时状态栏/
 //   字幕文字改白色（亮色主题黑字在黑底上看不见），藏起时恢复主题色。
@@ -235,14 +239,15 @@ lv_obj_t* CreateOneEye(lv_obj_t* parent, int x_ofs, lv_obj_t** pupil_out, lv_obj
     return eye;
 }
 
-// 建一只鼻孔：小灰椭圆。鼻孔是眼睛层的子对象，跟眼睛一起显示/藏起。
+// 建一只鼻孔：小灰竖缝（5x15 胶囊形，原版玩偶的鼻孔是两个小短竖缝）。
+// 鼻孔是眼睛层的子对象，跟眼睛一起显示/藏起。
 lv_obj_t* CreateOneNostril(lv_obj_t* parent, int x_ofs) {
     lv_obj_t* nose = lv_obj_create(parent);
     lv_obj_set_size(nose, kNoseW, kNoseH);
     lv_obj_align(nose, LV_ALIGN_CENTER, x_ofs, kNoseCenterY - 180);
     lv_obj_set_style_bg_color(nose, lv_color_hex(kFaceGray), 0);
     lv_obj_set_style_bg_opa(nose, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(nose, LV_RADIUS_CIRCLE, 0);  // 12x16 → 小竖椭圆
+    lv_obj_set_style_radius(nose, LV_RADIUS_CIRCLE, 0);  // 5x15 → 细竖缝
     lv_obj_set_style_border_width(nose, 0, 0);
     lv_obj_set_style_pad_all(nose, 0, 0);
     lv_obj_remove_flag(nose, LV_OBJ_FLAG_CLICKABLE);
@@ -250,18 +255,19 @@ lv_obj_t* CreateOneNostril(lv_obj_t* parent, int x_ofs) {
     return nose;
 }
 
-// 建嘴巴：宽而浅的微笑弧线，18 点折线拟合圆心 (180,-163.6)、半径 455.6 的圆，
-// 端点 (95,284)/(265,284)、最低点 (180,292)。点坐标相对线对象左上角 (93,284)。
+// 建嘴巴：细长微弯的线（原版玩偶的嘴巴是一条细长、微微弯曲的线，不是宽笑弧），
+// 21 点折线拟合圆心 (180,-528.3)、半径 836.3 的圆，端点 (80,302)/(280,302)、
+// 最低点 (180,308)，线宽 2。点坐标相对线对象左上角 (78,300)。
 lv_obj_t* CreateMouth(lv_obj_t* parent) {
     lv_obj_t* mouth = lv_line_create(parent);
-    lv_obj_set_size(mouth, 174, 12);
-    lv_obj_align(mouth, LV_ALIGN_CENTER, 0, 110);  // 对象中心 (180,290)，左上 (93,284)
+    lv_obj_set_size(mouth, 204, 12);
+    lv_obj_align(mouth, LV_ALIGN_CENTER, 0, 126);  // 对象中心 (180,306)，左上 (78,300)
     lv_point_precise_t pts[kMouthPointCount];
     for (int i = 0; i < kMouthPointCount; i++) {
-        double xa = 95.0 + i * 10.0;
+        double xa = 80.0 + i * 10.0;
         double ya = kMouthCircleCy + std::sqrt(kMouthCircleR * kMouthCircleR - (xa - 180.0) * (xa - 180.0));
-        pts[i].x = (lv_value_precise_t)llround(xa - 93.0);
-        pts[i].y = (lv_value_precise_t)llround(ya - 284.0);
+        pts[i].x = (lv_value_precise_t)llround(xa - 78.0);
+        pts[i].y = (lv_value_precise_t)llround(ya - 300.0);
     }
     lv_line_set_points(mouth, pts, kMouthPointCount);
     lv_obj_set_style_line_color(mouth, lv_color_hex(kFaceGray), 0);
@@ -336,7 +342,7 @@ void HuanzhuRoundDisplay::CreateToothlessFace() {
     // 眼珠游移定时器：850ms 一次，只在思考/聆听表情下真的动瞳孔。
     look_timer_ = lv_timer_create(LookTimerCb, 850, this);
 
-    ESP_LOGI(TAG, "Toothless face v4 created: eyes 138x168 truly centered @ y=%d (set_y bug fixed), face text hidden",
+    ESP_LOGI(TAG, "Toothless face v5 created: eyes 138x168 @ x=180+-95, y=%d; nose slits + thin mouth (original plush style), face text hidden",
              kEyeCenterY);
 }
 

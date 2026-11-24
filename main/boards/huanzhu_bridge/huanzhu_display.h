@@ -32,6 +32,10 @@
 // 180° 相互抵消，90° 偏转只是面板物理安装方向，时钟转到上方能读时就是正面。
 // v4 脸显示时状态栏（时钟+图标）与底部字幕条都不画（先不做，隐藏起来），只留
 // 黑底+眼睛+鼻子+嘴巴；切到信息屏时文字照常显示。
+// v5（2026-11-24）：chen 说 v4 眼睛上下位置可以，两只眼各往左右再分开一点
+// （眼心 x 偏移 ±80→±95，y=180 不动；验算过，椭圆离圆心最远 164<180，
+// 全在内切圆内）；鼻子嘴巴按玩偶原版重画——鼻孔改成两个小短竖缝
+// （5x15 胶囊形），嘴巴改成一条细长微弯的线（宽 200、线宽 2、弧垂 6）。
 // 眼睛/鼻子/嘴巴用 LVGL 图元画，不用 GIF 素材，所以不用改 assets 分区；
 // 眨眼和眼珠转动由两个 lv_timer 驱动。脸背景与文字颜色跟眼睛同进退：
 // 脸显示时背景纯黑、状态栏/字幕文字改白色；切到信息屏藏起眼睛时恢复主题配色。
@@ -97,9 +101,9 @@ private:
     lv_obj_t* pupil_r_ = nullptr;     // 右竖瞳
     lv_obj_t* hl_l_ = nullptr;        // 左高光（白点）
     lv_obj_t* hl_r_ = nullptr;        // 右高光
-    lv_obj_t* nose_l_ = nullptr;      // 左鼻孔（小灰椭圆）
+    lv_obj_t* nose_l_ = nullptr;      // 左鼻孔（小灰竖缝）
     lv_obj_t* nose_r_ = nullptr;      // 右鼻孔
-    lv_obj_t* mouth_ = nullptr;       // 嘴巴（宽而浅的微笑弧线，lv_line）
+    lv_obj_t* mouth_ = nullptr;       // 嘴巴（细长微弯的线，lv_line；v5 按原版玩偶重画）
     lv_color_t theme_text_color_ = lv_color_black();  // 主题文字色（SetupUI 时从屏幕样式取）
     lv_timer_t* blink_timer_ = nullptr;  // 眨眼定时器
     lv_timer_t* look_timer_ = nullptr;   // 眼珠游移定时器
